@@ -79,6 +79,37 @@ export function drawRover(
   ctx.fillStyle = 'rgba(255,255,255,0.12)';
   ctx.fillRect(-18, -3, 36, 1);
 
+  // Amber underglow when towing
+  if (rover.cargoAttached) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = 'rgba(255,150,40,0.28)';
+    ctx.beginPath();
+    ctx.ellipse(8, 0, 28, 16, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // Gripper prongs (front)
+  const grip = rover.gripperOpen;
+  const spread = 4 + grip * 10;
+  ctx.strokeStyle = rover.cargoAttached
+    ? 'rgba(255,180,80,0.95)'
+    : 'rgba(180,200,210,0.9)';
+  ctx.lineWidth = 2.5;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(20, -spread);
+  ctx.lineTo(28 + grip * 4, -spread - 2);
+  ctx.moveTo(20, spread);
+  ctx.lineTo(28 + grip * 4, spread + 2);
+  ctx.stroke();
+  if (grip > 0.1) {
+    ctx.fillStyle = `rgba(0,220,255,${0.15 + grip * 0.25})`;
+    ctx.beginPath();
+    ctx.arc(26, 0, 3 + grip * 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // Headlights
   if (rover.headlights) {
     ctx.fillStyle = 'rgba(255,240,200,0.95)';

@@ -1,5 +1,5 @@
 import type { TipState } from '../vision/TipPipeline';
-import type { RoverState } from '../rover/types';
+import type { DrivePhase, RoverState } from '../rover/types';
 
 export function drawReticle(
   ctx: CanvasRenderingContext2D,
@@ -24,22 +24,29 @@ export function drawReticle(
     ctx.lineTo(8, 0);
     ctx.stroke();
   } else if (tip.painting) {
-    ctx.strokeStyle = `rgba(0,255,220,${0.7 + pulse * 0.3})`;
-    ctx.lineWidth = 2;
+    // Bright cyan flare on paint
+    ctx.strokeStyle = `rgba(0,255,220,${0.75 + pulse * 0.25})`;
+    ctx.lineWidth = 2.5;
     ctx.beginPath();
-    ctx.arc(0, 0, 12 + pulse * 2, 0, Math.PI * 2);
+    ctx.arc(0, 0, 14 + pulse * 3, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(0,255,220,0.9)';
+    ctx.strokeStyle = `rgba(180,255,255,${0.4 + pulse * 0.3})`;
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.arc(0, 0, 3.5, 0, Math.PI * 2);
+    ctx.arc(0, 0, 22 + pulse * 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(0,255,220,0.95)';
+    ctx.beginPath();
+    ctx.arc(0, 0, 4, 0, Math.PI * 2);
     ctx.fill();
   } else {
-    ctx.strokeStyle = `rgba(180,200,220,${0.35 + pulse * 0.25})`;
+    // Dim ring on hover
+    ctx.strokeStyle = `rgba(160,200,220,${0.28 + pulse * 0.18})`;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.arc(0, 0, 9, 0, Math.PI * 2);
+    ctx.arc(0, 0, 11, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = `rgba(200,220,230,${0.35 + pulse * 0.2})`;
+    ctx.fillStyle = `rgba(180,210,230,${0.3 + pulse * 0.15})`;
     ctx.beginPath();
     ctx.arc(0, 0, 2.5, 0, Math.PI * 2);
     ctx.fill();
@@ -55,7 +62,10 @@ export function drawHud(
     charge: number;
     handVisible: boolean;
     painting: boolean;
+    hovering: boolean;
     erasing: boolean;
+    mode: TipState['mode'];
+    drivePhase: DrivePhase;
     clean: boolean;
     fps: number;
     width: number;
@@ -69,10 +79,10 @@ export function drawHud(
   ctx.font = '600 12px "Segoe UI", system-ui, sans-serif';
   ctx.textBaseline = 'top';
 
-  const label = opts.state.toUpperCase();
+  const modeChip = modeLabel(opts);
   const padX = 10;
   const padY = 6;
-  const tw = ctx.measureText(label).width;
+  const tw = ctx.measureText(modeChip).width;
   const chipW = tw + padX * 2;
   const chipH = 22;
   const x = width - chipW - 16;
@@ -81,10 +91,10 @@ export function drawHud(
   ctx.fillStyle = 'rgba(10,14,18,0.7)';
   roundChip(ctx, x, y, chipW, chipH, 4);
   ctx.fill();
-  ctx.fillStyle = stateColor(opts.state);
-  ctx.fillText(label, x + padX, y + padY);
+  ctx.fillStyle = modeColor(opts);
+  ctx.fillText(modeChip, x + padX, y + padY);
 
-  // Charge bar under state
+  // Charge bar
   ctx.fillStyle = 'rgba(10,14,18,0.55)';
   roundChip(ctx, x, y + 28, chipW, 8, 3);
   ctx.fill();
@@ -94,7 +104,7 @@ export function drawHud(
 
   // Hints
   ctx.fillStyle = 'rgba(10,14,18,0.62)';
-  roundChip(ctx, 14, height - 52, Math.min(420, width - 28), 38, 4);
+  roundChip(ctx, 14, height - 52, Math.min(440, width - 28), 38, 4);
   ctx.fill();
   ctx.fillStyle = 'rgba(200,220,230,0.9)';
   ctx.font = '500 12px "Segoe UI", system-ui, sans-serif';
@@ -103,22 +113,54 @@ export function drawHud(
     opts.erasing
       ? 'Erasing tether…'
       : opts.painting
-        ? 'DRAW mode — finish the line, then rover drives'
-        : opts.handVisible
-          ? 'Extend index to draw one path · hold still to finish'
-          : 'Draw one path first · rover waits · then analyzes & drives',
+        ? 'PAINT — pinch held · release to commit route'
+        : opts.hovering
+          ? 'HOVER — open hand · pinch thumb+index to paint'
+          : opts.handVisible
+            ? 'Hand seen · open to hover · pinch to paint'
+            : 'Pinch to paint · Deploy Core · paint near core to deliver',
     24,
     height - 44,
   );
   ctx.font = '500 11px "Segoe UI", system-ui, sans-serif';
   ctx.fillStyle = 'rgba(160,180,190,0.85)';
   ctx.fillText(
-    'Circles = rover nodes · gold = focus · pink = lookahead · C = clear',
+    'Mouse drag paints · Place Core click · C clears path · Esc exits place',
     24,
     height - 26,
   );
 
   ctx.restore();
+}
+
+function modeLabel(opts: {
+  painting: boolean;
+  hovering: boolean;
+  erasing: boolean;
+  drivePhase: DrivePhase;
+  state: RoverState;
+}): string {
+  if (opts.erasing) return 'ERASE';
+  if (opts.painting) return 'PAINT';
+  if (opts.hovering) return 'HOVER';
+  if (opts.drivePhase !== 'idle') {
+    return opts.drivePhase.toUpperCase();
+  }
+  if (opts.state === 'Waiting') return 'WAITING';
+  return opts.state.toUpperCase();
+}
+
+function modeColor(opts: {
+  painting: boolean;
+  hovering: boolean;
+  drivePhase: DrivePhase;
+  state: RoverState;
+}): string {
+  if (opts.painting) return '#00ffd8';
+  if (opts.hovering) return '#9ab8c8';
+  if (opts.drivePhase === 'secure' || opts.drivePhase === 'tow') return '#ff9a28';
+  if (opts.drivePhase === 'deliver') return '#5fe0a0';
+  return stateColor(opts.state);
 }
 
 function stateColor(state: RoverState): string {

@@ -3,21 +3,21 @@ import { dist } from '../utils/math';
 import { HandLandmark } from './landmarks';
 import type { Landmark } from './landmarks';
 
-export type PaintMode = 'idle' | 'paint' | 'erase';
+export type PaintMode = 'idle' | 'hover' | 'paint' | 'erase';
 
 /**
- * Debounced index-stylus gate.
- * Requires hold to start/stop so noisy landmarks don't spawn dozens of strokes.
+ * Pinch-to-paint with hover when hand is open.
+ * EMA + hysteresis + hold debounce (webcam-safe).
  */
 export class PaintGate {
   private painting = false;
-  private extendSmooth = 0;
+  private pinchSmooth = 1;
   private wantPaintSince = 0;
   private wantIdleSince = 0;
 
   reset(): void {
     this.painting = false;
-    this.extendSmooth = 0;
+    this.pinchSmooth = 1;
     this.wantPaintSince = 0;
     this.wantIdleSince = 0;
   }
@@ -27,39 +27,41 @@ export class PaintGate {
       return this.forceIdle(now);
     }
 
-    const tip = landmarks[HandLandmark.INDEX_TIP];
-    const mcp = landmarks[HandLandmark.INDEX_MCP];
-    const pip = landmarks[HandLandmark.INDEX_PIP];
+    const thumb = landmarks[HandLandmark.THUMB_TIP];
+    const index = landmarks[HandLandmark.INDEX_TIP];
+    const raw = dist(thumb.x, thumb.y, index.x, index.y);
+    const a = CONFIG.PINCH_EMA;
+    this.pinchSmooth = this.pinchSmooth * (1 - a) + raw * a;
 
-    const extend =
-      dist(tip.x, tip.y, pip.x, pip.y) * 0.55 +
-      dist(tip.x, tip.y, mcp.x, mcp.y) * 0.45;
-    this.extendSmooth = this.extendSmooth * 0.82 + extend * 0.18;
-
-    const wantsPaint = this.extendSmooth >= CONFIG.INDEX_EXTEND_ON;
-    const wantsIdle = this.extendSmooth < CONFIG.INDEX_EXTEND_OFF;
+    const wantsPaint = this.pinchSmooth <= CONFIG.PINCH_ON;
+    const wantsOpen = this.pinchSmooth >= CONFIG.PINCH_OFF;
 
     if (!this.painting) {
       if (wantsPaint) {
         if (!this.wantPaintSince) this.wantPaintSince = now;
-        if (now - this.wantPaintSince >= CONFIG.PAINT_START_HOLD_MS) {
+        if (now - this.wantPaintSince >= CONFIG.PINCH_START_HOLD_MS) {
           this.painting = true;
           this.wantIdleSince = 0;
         }
       } else {
         this.wantPaintSince = 0;
       }
-    } else if (wantsIdle) {
+      return this.painting ? 'paint' : 'hover';
+    }
+
+    // Currently painting
+    if (wantsOpen) {
       if (!this.wantIdleSince) this.wantIdleSince = now;
-      if (now - this.wantIdleSince >= CONFIG.PAINT_END_HOLD_MS) {
+      if (now - this.wantIdleSince >= CONFIG.PINCH_END_HOLD_MS) {
         this.painting = false;
         this.wantPaintSince = 0;
+        this.wantIdleSince = 0;
+        return 'hover';
       }
     } else {
       this.wantIdleSince = 0;
     }
-
-    return this.painting ? 'paint' : 'idle';
+    return 'paint';
   }
 
   private forceIdle(now: number): PaintMode {
@@ -68,15 +70,20 @@ export class PaintGate {
       return 'idle';
     }
     if (!this.wantIdleSince) this.wantIdleSince = now;
-    if (now - this.wantIdleSince >= CONFIG.PAINT_END_HOLD_MS) {
+    if (now - this.wantIdleSince >= CONFIG.PINCH_END_HOLD_MS) {
       this.painting = false;
       this.wantPaintSince = 0;
       this.wantIdleSince = 0;
+      return 'idle';
     }
-    return this.painting ? 'paint' : 'idle';
+    return 'paint';
   }
 
   get isPainting(): boolean {
     return this.painting;
+  }
+
+  get pinchDistance(): number {
+    return this.pinchSmooth;
   }
 }

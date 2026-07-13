@@ -1,7 +1,11 @@
 import type { PlasmaPath } from '../path/PlasmaPath';
 import type { RoverSnapshot } from '../rover/types';
 import type { TipState } from '../vision/TipPipeline';
+import type { Cargo } from '../world/Cargo';
+import type { DropZone } from '../world/DropZone';
 import { drawAnalysis, drawAnalysisHud } from './drawAnalysis';
+import { drawCargo } from './drawCargo';
+import { drawDropZone } from './drawDropZone';
 import { drawHud, drawReticle } from './drawHud';
 import { drawLaser } from './drawLaser';
 import { drawPlasma } from './drawPlasma';
@@ -63,16 +67,32 @@ export class Renderer {
     fps: number;
     video: HTMLVideoElement | null;
     drawing: boolean;
+    cargo: Cargo;
+    dropZone: DropZone;
   }): void {
     const { ctx } = this;
-    const { path, rover, tip, now, fps, video, drawing } = opts;
+    const { path, rover, tip, now, fps, video, drawing, cargo, dropZone } =
+      opts;
 
     this.drawVideo(video);
+    drawDropZone(
+      ctx,
+      dropZone,
+      now,
+      cargo.present &&
+        (cargo.status === 'targeted' ||
+          cargo.status === 'secured' ||
+          rover.drivePhase === 'tow' ||
+          rover.drivePhase === 'deliver'),
+    );
+    drawCargo(ctx, cargo, now);
     drawPlasma(ctx, path, now);
     drawAnalysis(ctx, path, rover.analysis, now);
     drawUnderglow(ctx, rover, now);
     if (!drawing && !rover.analysis.holding) {
-      drawLaser(ctx, rover, now);
+      drawLaser(ctx, rover, tip, now);
+    } else if (tip.hovering && !tip.painting && !drawing) {
+      drawLaser(ctx, rover, tip, now);
     }
     drawRover(ctx, rover, now);
     drawReticle(ctx, tip, now);
@@ -81,13 +101,17 @@ export class Renderer {
       height: this.canvas.height,
       clean: this.clean,
       painting: drawing || tip.painting,
+      tipMode: tip.mode,
     });
     drawHud(ctx, {
       state: rover.state,
       charge: rover.charge,
       handVisible: tip.visible,
       painting: drawing || tip.painting,
+      hovering: tip.hovering && !tip.painting,
       erasing: tip.erasing,
+      mode: tip.mode,
+      drivePhase: rover.drivePhase,
       clean: this.clean,
       fps,
       width: this.canvas.width,

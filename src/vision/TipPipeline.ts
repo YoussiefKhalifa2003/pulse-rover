@@ -11,8 +11,10 @@ export interface TipState {
   painting: boolean;
   erasing: boolean;
   visible: boolean;
+  hovering: boolean;
   confidence: number;
   mode: PaintMode | 'pointer' | 'pointer-erase';
+  pinchDistance: number;
   raw?: { x: number; y: number };
 }
 
@@ -60,7 +62,6 @@ export class TipPipeline {
     if (!sample || sample.landmarks.length < 21) {
       if (this.holdVisible && now - this.lostSince < CONFIG.HAND_LOST_GRACE_MS) {
         const pos = this.smoother.position;
-        // Keep paint gate from hard-cutting mid-stroke on a blink
         const mode = this.paintGate.update([], 0, now);
         return {
           x: pos?.x ?? width * 0.5,
@@ -68,8 +69,10 @@ export class TipPipeline {
           painting: mode === 'paint',
           erasing: false,
           visible: true,
+          hovering: mode === 'hover' || mode === 'paint',
           confidence: 0.2,
           mode,
+          pinchDistance: this.paintGate.pinchDistance,
         };
       }
       this.paintGate.update([], 0, now);
@@ -80,8 +83,10 @@ export class TipPipeline {
         painting: false,
         erasing: false,
         visible: false,
+        hovering: false,
         confidence: 0,
         mode: 'idle',
+        pinchDistance: 1,
       };
     }
 
@@ -99,8 +104,10 @@ export class TipPipeline {
       painting: mode === 'paint',
       erasing: false,
       visible: true,
+      hovering: mode === 'hover' || mode === 'paint',
       confidence: sample.presence,
       mode,
+      pinchDistance: this.paintGate.pinchDistance,
       raw,
     };
   }
@@ -119,8 +126,10 @@ export class TipPipeline {
       painting: down && !erase,
       erasing: down && erase,
       visible: true,
+      hovering: !down,
       confidence: 1,
-      mode: down ? (erase ? 'pointer-erase' : 'pointer') : 'idle',
+      mode: down ? (erase ? 'pointer-erase' : 'pointer') : 'hover',
+      pinchDistance: down ? 0 : 1,
     };
   }
 }

@@ -9,6 +9,10 @@ import { BootOverlay } from '../ui/BootOverlay';
 import { HandTracker } from '../vision/HandTracker';
 import { TipPipeline } from '../vision/TipPipeline';
 import type { TipState } from '../vision/TipPipeline';
+import { Cargo } from '../world/Cargo';
+import { DropZone } from '../world/DropZone';
+
+type PlaceMode = 'none' | 'core' | 'zone';
 
 export class GameApp {
   private root: HTMLElement;
@@ -17,12 +21,18 @@ export class GameApp {
   private video: HTMLVideoElement;
   private canvas: HTMLCanvasElement;
   private boot: BootOverlay;
+  private toolbar: HTMLElement;
   private clearBtn: HTMLButtonElement;
+  private deployBtn: HTMLButtonElement;
+  private placeCoreBtn: HTMLButtonElement;
+  private resetZoneBtn: HTMLButtonElement;
   private camera: CameraService;
   private tracker = new HandTracker();
   private tipPipe = new TipPipeline();
   private path = new PlasmaPath();
   private rover = new Rover();
+  private cargo = new Cargo();
+  private dropZone = new DropZone();
   private renderer: Renderer;
   private audio = new AudioCues();
 
@@ -38,17 +48,20 @@ export class GameApp {
   private usePointer = false;
   private eraseKey = false;
   private hasCamera = false;
-  /** True from first paint until stroke is committed to the rover. */
   private drawSession = false;
   private paintIdleSince = 0;
+  private wasPainting = false;
+  private placeMode: PlaceMode = 'none';
   private lastTip: TipState = {
     x: 0,
     y: 0,
     painting: false,
     erasing: false,
     visible: false,
+    hovering: false,
     confidence: 0,
     mode: 'idle',
+    pinchDistance: 1,
   };
   private lastState: RoverState = 'Recon';
   private viewW = 1280;
@@ -70,15 +83,24 @@ export class GameApp {
 
     this.canvas = document.createElement('canvas');
 
-    this.clearBtn = document.createElement('button');
-    this.clearBtn.type = 'button';
-    this.clearBtn.className = 'clear-btn';
-    this.clearBtn.textContent = 'Clear path';
-    if (this.clean) this.clearBtn.classList.add('is-hidden');
+    this.toolbar = document.createElement('div');
+    this.toolbar.className = 'toolbar';
+    if (this.clean) this.toolbar.classList.add('is-hidden');
+
+    this.clearBtn = this.makeBtn('Clear path', 'clear-btn');
+    this.deployBtn = this.makeBtn('Deploy Core', 'tool-btn');
+    this.placeCoreBtn = this.makeBtn('Place Core', 'tool-btn');
+    this.resetZoneBtn = this.makeBtn('Reset Zone', 'tool-btn');
+    this.toolbar.append(
+      this.clearBtn,
+      this.deployBtn,
+      this.placeCoreBtn,
+      this.resetZoneBtn,
+    );
 
     this.stageInner.append(this.video, this.canvas);
     this.stage.append(this.stageInner);
-    this.root.append(this.stage, this.clearBtn);
+    this.root.append(this.stage, this.toolbar);
 
     this.boot = new BootOverlay(this.root);
     this.camera = new CameraService(this.video);
@@ -87,16 +109,53 @@ export class GameApp {
     this.bindPointer();
     this.bindKeys();
     this.clearBtn.addEventListener('click', () => this.clearPath());
+    this.deployBtn.addEventListener('click', () => this.deployCore());
+    this.placeCoreBtn.addEventListener('click', () =>
+      this.setPlaceMode(this.placeMode === 'core' ? 'none' : 'core'),
+    );
+    this.resetZoneBtn.addEventListener('click', () => this.resetZone());
     this.boot.onEngageClick(() => void this.engage());
   }
 
+  private makeBtn(label: string, className: string): HTMLButtonElement {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = className;
+    b.textContent = label;
+    return b;
+  }
+
+  private setPlaceMode(mode: PlaceMode): void {
+    this.placeMode = mode;
+    this.placeCoreBtn.classList.toggle('is-active', mode === 'core');
+    this.canvas.style.cursor = mode === 'core' ? 'cell' : 'crosshair';
+  }
+
+  private deployCore(): void {
+    const x =
+      this.lastTip.visible && this.lastTip.hovering
+        ? this.lastTip.x
+        : this.canvas.width * 0.5;
+    const y =
+      this.lastTip.visible && this.lastTip.hovering
+        ? this.lastTip.y
+        : this.canvas.height * 0.45;
+    this.cargo.deploy(x, y);
+    this.setPlaceMode('none');
+  }
+
+  private resetZone(): void {
+    this.dropZone.resetDefault(this.canvas.width, this.canvas.height);
+  }
+
   private clearPath(): void {
+    this.rover.abortMission(this.path);
     this.path.unpinStroke();
     this.path.clear();
     this.path.endStroke();
     this.drawSession = false;
     this.paintIdleSince = 0;
-    this.rover.setHolding(false);
+    this.wasPainting = false;
   }
 
   private bindKeys(): void {
@@ -105,6 +164,7 @@ export class GameApp {
         this.clearPath();
       }
       if (e.code === 'KeyE') this.eraseKey = true;
+      if (e.code === 'Escape') this.setPlaceMode('none');
     });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'KeyE') this.eraseKey = false;
@@ -122,11 +182,18 @@ export class GameApp {
     this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
     this.canvas.addEventListener('pointerdown', (e) => {
+      const p = onPos(e.clientX, e.clientY);
+
+      if (this.placeMode === 'core' && e.button === 0) {
+        this.cargo.deploy(p.x, p.y);
+        this.setPlaceMode('none');
+        return;
+      }
+
       this.usePointer = true;
       this.pointerDown = true;
       this.pointerErase = e.button === 2 || this.eraseKey;
       this.canvas.setPointerCapture(e.pointerId);
-      const p = onPos(e.clientX, e.clientY);
       const now = performance.now();
       this.lastTip = this.tipPipe.processPointer(
         p.x,
@@ -195,6 +262,7 @@ export class GameApp {
 
       const now = performance.now();
       this.rover.init(this.canvas.width, this.canvas.height, now);
+      this.dropZone.resetDefault(this.canvas.width, this.canvas.height);
       this.boot.setPhase('hidden');
       this.startLoop();
     } catch (err) {
@@ -206,12 +274,12 @@ export class GameApp {
       this.fitContain(this.viewW, this.viewH);
       this.usePointer = true;
       this.rover.init(this.viewW, this.viewH, performance.now());
+      this.dropZone.resetDefault(this.viewW, this.viewH);
       this.boot.setPhase('hidden');
       this.startLoop();
     }
   }
 
-  /** Fit playfield inside the viewport (letterbox) so the rover never leaves the screen. */
   private fitContain(vw: number, vh: number): void {
     const aspect = vw / vh;
     const winW = window.innerWidth;
@@ -232,6 +300,7 @@ export class GameApp {
       this.viewH = Math.max(360, Math.min(720, window.innerHeight));
       this.renderer.resize(this.viewW, this.viewH);
       this.rover.resize(this.viewW, this.viewH);
+      this.dropZone.resetDefault(this.viewW, this.viewH);
       this.fitContain(this.viewW, this.viewH);
       return;
     }
@@ -265,7 +334,6 @@ export class GameApp {
       this.fpsFrames = 0;
     }
 
-    // Hand tracking (unless actively mouse-painting)
     if (this.hasCamera && this.camera.ready && this.tracker.isReady) {
       if (!this.pointerDown) {
         const sample = this.tracker.detect(this.video, ts);
@@ -279,7 +347,19 @@ export class GameApp {
       }
     }
 
-    // Paint / erase / draw-then-drive
+    // Hover turret: tip visible, not painting / not erasing
+    const canHover =
+      this.lastTip.visible &&
+      !this.lastTip.painting &&
+      !this.lastTip.erasing &&
+      !this.drawSession;
+    if (canHover) {
+      this.rover.setHoverTarget(this.lastTip.x, this.lastTip.y);
+    } else if (this.lastTip.painting || this.drawSession) {
+      this.rover.setHoverTarget(null, null);
+    }
+
+    // Paint / erase / draw-then-drive (ink only while pinched / mouse-drag)
     if (this.lastTip.erasing || (this.eraseKey && this.lastTip.visible)) {
       this.path.eraseNear(
         this.lastTip.x,
@@ -288,9 +368,10 @@ export class GameApp {
       );
       this.paintIdleSince = 0;
     } else if (this.lastTip.painting) {
+      if (!this.wasPainting) this.audio.paintStart();
+      this.wasPainting = true;
       this.paintIdleSince = 0;
       if (!this.drawSession) {
-        // New draw session: wipe old path, freeze rover, one stroke only
         this.path.clear();
         this.rover.setHolding(true);
         this.path.beginStroke(this.lastTip.x, this.lastTip.y, ts);
@@ -300,22 +381,33 @@ export class GameApp {
         this.rover.notifyPaint(ts);
       }
     } else if (this.drawSession) {
-      // Keep stroke open during brief tracking gaps — only commit after idle
+      this.wasPainting = false;
       if (!this.paintIdleSince) this.paintIdleSince = ts;
       if (ts - this.paintIdleSince >= CONFIG.DRIVE_COMMIT_MS) {
         this.path.endStroke();
         this.drawSession = false;
         this.paintIdleSince = 0;
         if (this.path.hasPoints()) {
-          this.rover.armPath(this.path);
+          this.rover.armPath(
+            this.path,
+            this.cargo.present ? this.cargo : null,
+            this.dropZone,
+          );
         } else {
           this.rover.setHolding(false);
         }
       }
+    } else {
+      this.wasPainting = false;
     }
 
+    this.rover.bindWorld(this.cargo, this.dropZone);
     this.path.update(ts);
     this.rover.update(dt, ts, this.path);
+
+    const events = this.rover.consumeEvents();
+    if (events.secured) this.audio.secure();
+    if (events.delivered) this.audio.deliver();
 
     const snap = this.rover.buildSnapshot(this.path);
     if (snap.state !== this.lastState) {
@@ -333,6 +425,8 @@ export class GameApp {
       fps: this.fps,
       video: this.hasCamera ? this.video : null,
       drawing: this.drawSession,
+      cargo: this.cargo,
+      dropZone: this.dropZone,
     });
 
     this.raf = requestAnimationFrame((t) => this.frame(t));

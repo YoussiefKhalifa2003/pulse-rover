@@ -1,8 +1,20 @@
 import { CONFIG } from '../config';
 import type { PlasmaPath } from '../path/PlasmaPath';
 import { angleDiff, clamp, dist, normalizeAngle } from '../utils/math';
+import type { Cargo } from '../world/Cargo';
+import type { DropZone } from '../world/DropZone';
+import {
+  buildDeliveryMission,
+  emptyMission,
+  type MissionPlan,
+} from '../world/Mission';
 import { RoverStateMachine } from './RoverStateMachine';
-import type { AbsorbTrail, RoverSnapshot, RoverState } from './types';
+import type {
+  AbsorbTrail,
+  DrivePhase,
+  RoverSnapshot,
+  RoverState,
+} from './types';
 
 interface BoostStreak {
   x: number;
@@ -17,11 +29,8 @@ interface RoutePoint {
 }
 
 /**
- * Deterministic path follower:
- * - Freezes a route copy at arm time
- * - Spawns on the FIRST node
- * - Advances one node at a time at constant cruise speed
- * - Absorbing ink does not change the route / skip nodes
+ * Deterministic path follower + delivery mission phases.
+ * Route copy is frozen at arm time; cargo parents to bumper while secured.
  */
 export class Rover {
   x = 0;
@@ -46,11 +55,20 @@ export class Rover {
   private followIndex = 0;
   private activeStrokeId: number | null = null;
   private route: RoutePoint[] = [];
-  /** approach = drive to route[0]; follow = sequential nodes */
-  private drivePhase: 'idle' | 'approach' | 'follow' = 'idle';
+  private drivePhase: DrivePhase = 'idle';
   private desiredAngle = 0;
-  private desiredSpeed: number = 0;
+  private desiredSpeed = 0;
   private holding = false;
+
+  private mission: MissionPlan = emptyMission();
+  private cargo: Cargo | null = null;
+  private zone: DropZone | null = null;
+  private secureUntil = 0;
+  private gripperOpen = 0;
+  private cargoAttached = false;
+  private hoverTarget: { x: number; y: number } | null = null;
+  private justSecured = false;
+  private justDelivered = false;
 
   private reconMode: 'burst' | 'pause' = 'pause';
   private reconUntil = 0;
@@ -77,6 +95,13 @@ export class Rover {
     this.route = [];
     this.drivePhase = 'idle';
     this.holding = false;
+    this.mission = emptyMission();
+    this.cargo = null;
+    this.zone = null;
+    this.secureUntil = 0;
+    this.gripperOpen = 0;
+    this.cargoAttached = false;
+    this.hoverTarget = null;
     this.lastActivityAt = now;
     this.lastPaintAt = now;
     this.initialized = true;
@@ -96,12 +121,38 @@ export class Rover {
       p.x *= sx;
       p.y *= sy;
     }
+    this.mission.dropX *= sx;
+    this.mission.dropY *= sy;
     this.clampToBounds(false);
   }
 
   notifyPaint(now: number): void {
     this.lastPaintAt = now;
     this.lastActivityAt = now;
+  }
+
+  /** Keep world refs for idle re-arm / mission planning. */
+  bindWorld(cargo: Cargo, zone: DropZone): void {
+    this.cargo = cargo;
+    this.zone = zone;
+  }
+
+  /** Abort drive / mission (Clear path). */
+  abortMission(path?: PlasmaPath): void {
+    if (path) this.clearRoute(path);
+    else this.clearRoute();
+    this.holding = false;
+    this.mission = emptyMission();
+    this.cargoAttached = false;
+    this.gripperOpen = 0;
+    this.desiredSpeed = 0;
+    this.speed = 0;
+    this.state = 'Recon';
+    if (this.cargo && this.cargo.status === 'secured') {
+      this.cargo.setStatus('idle');
+    } else if (this.cargo && this.cargo.status === 'targeted') {
+      this.cargo.setStatus('idle');
+    }
   }
 
   setHolding(holding: boolean): void {
@@ -113,6 +164,9 @@ export class Rover {
       this.route = [];
       this.followIndex = 0;
       this.drivePhase = 'idle';
+      this.mission = emptyMission();
+      this.cargoAttached = false;
+      this.gripperOpen = 0;
     }
   }
 
@@ -120,11 +174,31 @@ export class Rover {
     return this.holding;
   }
 
+  /** Tip hover target for curious turret (Waiting / Recon idle). */
+  setHoverTarget(x: number | null, y: number | null): void {
+    if (x === null || y === null) {
+      this.hoverTarget = null;
+      return;
+    }
+    this.hoverTarget = { x, y };
+  }
+
+  /** Consume one-shot audio events. */
+  consumeEvents(): { secured: boolean; delivered: boolean } {
+    const out = { secured: this.justSecured, delivered: this.justDelivered };
+    this.justSecured = false;
+    this.justDelivered = false;
+    return out;
+  }
+
   /**
-   * Commit path: copy stroke, pin it against decay, then DRIVE to the
-   * first node (no teleport) before following the rest.
+   * Commit path: copy + pin stroke, build delivery mission if cargo/zone given.
    */
-  armPath(path: PlasmaPath): void {
+  armPath(
+    path: PlasmaPath,
+    cargo: Cargo | null = null,
+    zone: DropZone | null = null,
+  ): void {
     const strokeId = path.latestStrokeId();
     if (strokeId === null) {
       this.holding = false;
@@ -140,23 +214,34 @@ export class Rover {
     this.charge = Math.min(this.charge, 0.85);
     this.overdriveUntil = 0;
     this.lastActivityAt = performance.now();
+    this.cargo = cargo;
+    this.zone = zone;
+    this.cargoAttached = false;
+    this.gripperOpen = 0;
+    this.mission =
+      cargo && zone
+        ? buildDeliveryMission(path, cargo, zone)
+        : emptyMission();
+    if (this.mission.active && zone) {
+      const c = zone.center;
+      this.mission.dropX = c.x;
+      this.mission.dropY = c.y;
+    }
 
     if (this.route.length === 0) {
       this.drivePhase = 'idle';
       return;
     }
 
-    // Keep the tether alive until we finish
     path.pinStroke(strokeId);
 
     const start = this.route[0];
     const distToStart = dist(this.x, this.y, start.x, start.y);
 
     if (distToStart <= CONFIG.WAYPOINT_REACH_PX * 1.25) {
-      // Already near start — begin follow immediately
       this.beginFollowFromStart();
+      this.mission.checklist.approachStart = true;
     } else {
-      // Smart approach: navigate to the drawn start, then follow
       this.drivePhase = 'approach';
       this.state = 'LockedOn';
       this.speed = Math.min(this.speed, CONFIG.ROVER_APPROACH_SPEED * 0.5);
@@ -172,6 +257,7 @@ export class Rover {
     this.followIndex = 0;
     this.state = 'LockedOn';
     this.desiredSpeed = CONFIG.ROVER_CRUISE_SPEED;
+    this.mission.checklist.approachStart = true;
     if (this.route.length >= 2) {
       this.desiredAngle = Math.atan2(
         this.route[1].y - this.route[0].y,
@@ -183,7 +269,6 @@ export class Rover {
     }
   }
 
-  /** Clear route and unpin the path when done or cancelled. */
   private clearRoute(path?: PlasmaPath): void {
     if (path && this.activeStrokeId !== null) {
       path.unpinStroke();
@@ -191,6 +276,7 @@ export class Rover {
     this.route = [];
     this.drivePhase = 'idle';
     this.followIndex = 0;
+    this.activeStrokeId = null;
   }
 
   get snapshot(): RoverSnapshot {
@@ -214,6 +300,10 @@ export class Rover {
         age: 0,
       })),
       overdriveRemaining: Math.max(0, this.overdriveUntil - performance.now()),
+      gripperOpen: this.gripperOpen,
+      cargoAttached: this.cargoAttached,
+      drivePhase: this.drivePhase,
+      hoverTracking: !!this.hoverTarget && (this.holding || this.drivePhase === 'idle'),
       analysis: {
         holding: this.holding,
         followIndex: this.followIndex,
@@ -225,6 +315,8 @@ export class Rover {
         roverX: this.x,
         roverY: this.y,
         turretAngle: this.turretAngle,
+        drivePhase: this.drivePhase,
+        missionChecklist: { ...this.mission.checklist },
       },
     };
   }
@@ -261,7 +353,6 @@ export class Rover {
     return snap;
   }
 
-  /** Map route cursor onto live path array for overlay circles. */
   private mapFollowToPathIndex(path: PlasmaPath): number {
     if (this.activeStrokeId === null || this.route.length === 0) return -1;
     const start = path.firstIndexOfStroke(this.activeStrokeId);
@@ -275,17 +366,20 @@ export class Rover {
     this.trails = this.trails.filter((t) => now - t.bornAt < 450);
     this.boostStreaks = this.boostStreaks.filter((s) => now - s.bornAt < 280);
 
+    if (this.cargoAttached && this.cargo) {
+      this.cargo.attachTo(this.x, this.y, this.angle);
+    }
+
     if (this.holding) {
       this.updateWaiting(dt, path);
       return;
     }
 
-    if (this.route.length > 0) {
-      this.updateRouteDrive(dt, now, path);
+    if (this.drivePhase !== 'idle') {
+      this.updateMissionDrive(dt, now, path);
       return;
     }
 
-    // No active route
     this.updateIdle(dt, now, path);
   }
 
@@ -302,6 +396,13 @@ export class Rover {
       this.turretAngle = lerpAngle(this.turretAngle, want, 1 - Math.exp(-3 * dt));
       this.lockTarget = { x: tip.x, y: tip.y };
       this.activeStrokeId = tip.strokeId;
+    } else if (this.hoverTarget) {
+      const want = Math.atan2(
+        this.hoverTarget.y - this.y,
+        this.hoverTarget.x - this.x,
+      );
+      this.turretAngle = lerpAngle(this.turretAngle, want, 1 - Math.exp(-4 * dt));
+      this.lockTarget = { ...this.hoverTarget };
     } else {
       this.turretSweep += dt * 1.2 * this.turretSweepDir;
       if (Math.abs(this.turretSweep) > Math.PI / 2) this.turretSweepDir *= -1;
@@ -311,45 +412,75 @@ export class Rover {
     this.clampToBounds(false);
   }
 
-  private updateRouteDrive(dt: number, now: number, path: PlasmaPath): void {
+  private updateMissionDrive(dt: number, now: number, path: PlasmaPath): void {
     this.headlights = true;
     this.suspension = lerp(this.suspension, 1, dt * 4);
     this.lastActivityAt = now;
 
-    // ——— PHASE 1: drive to the start (no orbiting) ———
     if (this.drivePhase === 'approach') {
-      this.state = 'LockedOn';
-      const start = this.route[0];
-      this.lockTarget = start;
+      this.updateApproach(dt, path);
+      return;
+    }
+    if (this.drivePhase === 'secure') {
+      this.updateSecure(dt, now, path);
+      return;
+    }
+    if (this.drivePhase === 'seekCargo') {
+      this.updateSeekCargo(dt, now, path);
+      return;
+    }
+    if (this.drivePhase === 'tow') {
+      this.updateTow(dt, now, path);
+      return;
+    }
+    if (this.drivePhase === 'deliver') {
+      this.updateDeliver(dt, now, path);
+      return;
+    }
 
-      const dx = start.x - this.x;
-      const dy = start.y - this.y;
-      const d = Math.hypot(dx, dy);
-      this.desiredAngle = Math.atan2(dy, dx);
-      const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
+    // follow
+    this.updateFollow(dt, now, path);
+  }
 
-      // Slow hard when misaligned or close — kills start-point circles
-      let spd: number = CONFIG.ROVER_APPROACH_SPEED;
-      if (turn > 0.7) spd *= clamp(1.1 - turn * 0.55, 0.15, 1);
-      if (d < CONFIG.WAYPOINT_PASS_PX * 2) {
-        spd = Math.min(spd, 35 + d * 0.6);
-      }
-      this.desiredSpeed = spd;
+  private updateApproach(dt: number, path: PlasmaPath): void {
+    this.state = 'LockedOn';
+    const start = this.route[0];
+    if (!start) {
+      this.clearRoute(path);
+      return;
+    }
+    this.lockTarget = start;
 
-      if (d <= CONFIG.WAYPOINT_REACH_PX || this.hasPassedPoint(start, this.route[1])) {
-        this.beginFollowFromStart();
-      }
+    const dx = start.x - this.x;
+    const dy = start.y - this.y;
+    const d = Math.hypot(dx, dy);
+    this.desiredAngle = Math.atan2(dy, dx);
+    const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
 
+    let spd: number = CONFIG.ROVER_APPROACH_SPEED;
+    if (turn > 0.7) spd *= clamp(1.1 - turn * 0.55, 0.15, 1);
+    if (d < CONFIG.WAYPOINT_PASS_PX * 2) {
+      spd = Math.min(spd, 35 + d * 0.6);
+    }
+    this.desiredSpeed = spd;
+
+    if (d <= CONFIG.WAYPOINT_REACH_PX || this.hasPassedPoint(start, this.route[1])) {
+      this.beginFollowFromStart();
+    }
+
+    this.applyMotion(dt);
+  }
+
+  private updateFollow(dt: number, now: number, path: PlasmaPath): void {
+    this.state = 'LockedOn';
+
+    if (this.tryPickupIfNear(now)) {
       this.applyMotion(dt);
       return;
     }
 
-    // ——— PHASE 2: sequential follow ———
-    this.state = 'LockedOn';
-
     this.advanceAlongRoute();
 
-    // Arrived at end
     if (this.followIndex >= this.route.length - 1) {
       const last = this.route[this.route.length - 1];
       const dEnd = dist(this.x, this.y, last.x, last.y);
@@ -365,8 +496,7 @@ export class Rover {
           this.activeStrokeId,
         );
         if (this.speed < 8 || dEnd < CONFIG.WAYPOINT_REACH_PX * 0.5) {
-          this.clearRoute(path);
-          this.state = 'Recon';
+          this.onRouteComplete(path);
         }
         this.applyMotion(dt);
         return;
@@ -376,7 +506,179 @@ export class Rover {
       return;
     }
 
-    // Target the next node (or one ahead) — always ahead of us on the route
+    this.driveTowardRouteNode(dt, now, path, 1);
+  }
+
+  private onRouteComplete(path: PlasmaPath): void {
+    if (this.mission.hasCargo && !this.mission.checklist.secured) {
+      this.drivePhase = 'seekCargo';
+      this.state = 'LockedOn';
+      return;
+    }
+    if (this.mission.hasCargo && this.mission.checklist.secured) {
+      this.drivePhase = 'tow';
+      return;
+    }
+    this.clearRoute(path);
+    this.state = 'Recon';
+  }
+
+  private tryPickupIfNear(now: number): boolean {
+    if (!this.mission.hasCargo || this.mission.checklist.secured) return false;
+    if (!this.cargo || !this.cargo.present) return false;
+    if (!this.cargo.isNear(this.x, this.y)) return false;
+    this.beginSecure(now);
+    return true;
+  }
+
+  private beginSecure(now: number): void {
+    this.drivePhase = 'secure';
+    this.secureUntil = now + CONFIG.SECURE_MS;
+    this.desiredSpeed = 0;
+    this.speed = 0;
+    this.state = 'LockedOn';
+    if (this.cargo) this.cargo.setStatus('targeted');
+  }
+
+  private updateSecure(_dt: number, now: number, _path: PlasmaPath): void {
+    this.state = 'LockedOn';
+    this.desiredSpeed = 0;
+    this.speed = 0;
+    const t = 1 - Math.max(0, this.secureUntil - now) / CONFIG.SECURE_MS;
+    this.gripperOpen = clamp(t * CONFIG.GRIPPER_OPEN, 0, CONFIG.GRIPPER_OPEN);
+    if (this.cargo) {
+      this.lockTarget = { x: this.cargo.x, y: this.cargo.y };
+    }
+
+    if (now >= this.secureUntil) {
+      this.mission.checklist.secured = true;
+      this.cargoAttached = true;
+      this.gripperOpen = CONFIG.GRIPPER_OPEN * 0.55;
+      this.justSecured = true;
+      if (this.cargo) this.cargo.setStatus('secured');
+      // Resume route if remaining, else tow to zone
+      if (this.followIndex < this.route.length - 1) {
+        this.drivePhase = 'tow';
+      } else if (this.mission.hasCargo) {
+        this.drivePhase = 'tow';
+      } else {
+        this.drivePhase = 'follow';
+      }
+    }
+    this.clampToBounds(false);
+  }
+
+  private updateSeekCargo(dt: number, now: number, path: PlasmaPath): void {
+    this.state = 'LockedOn';
+    if (!this.cargo || !this.cargo.present || this.cargo.status === 'delivered') {
+      this.clearRoute(path);
+      this.state = 'Recon';
+      return;
+    }
+
+    this.lockTarget = { x: this.cargo.x, y: this.cargo.y };
+    const dx = this.cargo.x - this.x;
+    const dy = this.cargo.y - this.y;
+    const d = Math.hypot(dx, dy);
+    this.desiredAngle = Math.atan2(dy, dx);
+    const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
+    let spd: number = CONFIG.ROVER_CRUISE_SPEED * 0.9;
+    if (turn > 0.55) spd *= clamp(1.05 - turn * 0.5, 0.25, 1);
+    if (d < CONFIG.CARGO_PICKUP_RADIUS * 2) {
+      spd = Math.min(spd, 40 + d * 0.5);
+    }
+    this.desiredSpeed = spd;
+
+    if (d <= CONFIG.CARGO_PICKUP_RADIUS) {
+      this.beginSecure(now);
+    }
+    this.applyMotion(dt);
+  }
+
+  private updateTow(dt: number, now: number, path: PlasmaPath): void {
+    this.state = 'LockedOn';
+    this.gripperOpen = lerp(this.gripperOpen, CONFIG.GRIPPER_OPEN * 0.45, dt * 4);
+
+    // Finish remaining route while towing
+    if (this.followIndex < this.route.length - 1) {
+      this.advanceAlongRoute();
+      if (this.followIndex < this.route.length - 1) {
+        this.driveTowardRouteNode(dt, now, path, CONFIG.TOW_SPEED_MULT);
+        return;
+      }
+    }
+
+    // Drive to drop zone
+    if (!this.zone) {
+      this.finishMission(path);
+      return;
+    }
+
+    const drop = { x: this.mission.dropX, y: this.mission.dropY };
+    this.lockTarget = drop;
+    const dx = drop.x - this.x;
+    const dy = drop.y - this.y;
+    const d = Math.hypot(dx, dy);
+    this.desiredAngle = Math.atan2(dy, dx);
+    const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
+    let spd: number = CONFIG.ROVER_CRUISE_SPEED * CONFIG.TOW_SPEED_MULT;
+    if (turn > 0.55) spd *= clamp(1.05 - turn * 0.5, 0.25, 1);
+    if (d < 80) spd = Math.min(spd, 35 + d * 0.4);
+    this.desiredSpeed = spd;
+
+    const cargoIn =
+      this.cargo &&
+      this.zone.contains(this.cargo.x, this.cargo.y);
+    const bumperIn = this.zone.contains(this.x, this.y);
+
+    if ((cargoIn || bumperIn) && d < Math.max(this.zone.w, this.zone.h) * 0.65) {
+      this.drivePhase = 'deliver';
+      this.desiredSpeed = 0;
+      this.secureUntil = now + 280;
+    }
+
+    this.applyMotion(dt);
+  }
+
+  private updateDeliver(dt: number, now: number, path: PlasmaPath): void {
+    this.state = 'LockedOn';
+    this.desiredSpeed = 0;
+    this.speed = Math.max(0, this.speed - CONFIG.ROVER_ACCEL * dt * 2);
+    this.gripperOpen = lerp(this.gripperOpen, 0, dt * 6);
+
+    if (now >= this.secureUntil) {
+      this.cargoAttached = false;
+      this.mission.checklist.delivered = true;
+      this.justDelivered = true;
+      if (this.cargo) {
+        // Leave cargo in zone center-ish
+        if (this.zone) {
+          const c = this.zone.center;
+          this.cargo.x = c.x;
+          this.cargo.y = c.y;
+        }
+        this.cargo.setStatus('delivered');
+      }
+      this.finishMission(path);
+      return;
+    }
+    this.clampToBounds(false);
+  }
+
+  private finishMission(path: PlasmaPath): void {
+    this.clearRoute(path);
+    this.drivePhase = 'idle';
+    this.state = 'Recon';
+    this.cargoAttached = false;
+    this.gripperOpen = 0;
+  }
+
+  private driveTowardRouteNode(
+    dt: number,
+    now: number,
+    path: PlasmaPath,
+    speedMult: number,
+  ): void {
     const targetIdx = Math.min(
       this.followIndex + CONFIG.LOOKAHEAD_NODES,
       this.route.length - 1,
@@ -391,8 +693,7 @@ export class Rover {
     const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
     const dNext = dist(this.x, this.y, next.x, next.y);
 
-    // Steady cruise; brake for sharp turns / tight nodes instead of spinning
-    let spd: number = CONFIG.ROVER_CRUISE_SPEED;
+    let spd: number = CONFIG.ROVER_CRUISE_SPEED * speedMult;
     if (turn > 0.55) spd *= clamp(1.05 - turn * 0.5, 0.25, 1);
     if (dNext < CONFIG.WAYPOINT_PASS_PX) {
       spd = Math.min(spd, 45 + dNext * 0.8);
@@ -422,10 +723,6 @@ export class Rover {
     this.applyMotion(dt);
   }
 
-  /**
-   * Advance past waypoints we've reached OR already driven past
-   * (prevents orbiting a node we overshot).
-   */
   private advanceAlongRoute(): void {
     while (this.followIndex < this.route.length - 1) {
       const cur = this.route[this.followIndex];
@@ -442,10 +739,6 @@ export class Rover {
     }
   }
 
-  /**
-   * True if the rover has crossed past `point` along the path
-   * (or heading has put the point behind us while nearby).
-   */
   private hasPassedPoint(
     point: RoutePoint,
     next: RoutePoint | null | undefined,
@@ -456,7 +749,6 @@ export class Rover {
     if (d > CONFIG.WAYPOINT_PASS_PX) return false;
 
     if (next) {
-      // Past the waypoint along the segment direction
       const segX = next.x - point.x;
       const segY = next.y - point.y;
       const segLen = Math.hypot(segX, segY) || 1;
@@ -466,7 +758,6 @@ export class Rover {
       return along > 4;
     }
 
-    // Final point / no next: treat as passed when behind our heading
     const fwdX = Math.cos(this.angle);
     const fwdY = Math.sin(this.angle);
     const ahead = toPointX * fwdX + toPointY * fwdY;
@@ -474,7 +765,7 @@ export class Rover {
   }
 
   private updateIdle(dt: number, now: number, path: PlasmaPath): void {
-    this.lockTarget = null;
+    this.lockTarget = this.hoverTarget ? { ...this.hoverTarget } : null;
     this.state = this.fsm.update({
       now,
       hasPath: false,
@@ -494,9 +785,22 @@ export class Rover {
     } else {
       this.headlights = true;
       this.suspension = lerp(this.suspension, 1, dt * 3);
-      this.turretSweep += dt * 1.0 * this.turretSweepDir;
-      if (Math.abs(this.turretSweep) > Math.PI / 2) this.turretSweepDir *= -1;
-      this.turretAngle = this.angle + this.turretSweep;
+
+      if (this.hoverTarget) {
+        const want = Math.atan2(
+          this.hoverTarget.y - this.y,
+          this.hoverTarget.x - this.x,
+        );
+        this.turretAngle = lerpAngle(
+          this.turretAngle,
+          want,
+          1 - Math.exp(-4 * dt),
+        );
+      } else {
+        this.turretSweep += dt * 1.0 * this.turretSweepDir;
+        if (Math.abs(this.turretSweep) > Math.PI / 2) this.turretSweepDir *= -1;
+        this.turretAngle = this.angle + this.turretSweep;
+      }
 
       if (now >= this.reconUntil) {
         if (this.reconMode === 'pause') {
@@ -512,7 +816,7 @@ export class Rover {
         }
       }
 
-      if (this.reconMode === 'burst') {
+      if (this.reconMode === 'burst' && !this.hoverTarget) {
         this.desiredAngle = this.reconHeading;
         this.desiredSpeed = CONFIG.RECON_BURST_SPEED;
       } else {
@@ -524,9 +828,8 @@ export class Rover {
       }
     }
 
-    // If orphan path remains, arm it cleanly from the start
-    if (path.hasPoints() && this.route.length === 0) {
-      this.armPath(path);
+    if (path.hasPoints() && this.route.length === 0 && this.drivePhase === 'idle') {
+      this.armPath(path, this.cargo, this.zone);
       return;
     }
 

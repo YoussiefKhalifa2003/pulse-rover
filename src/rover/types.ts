@@ -1,4 +1,15 @@
+import type { MissionChecklist } from '../world/Mission';
+
 export type RoverState = 'Recon' | 'LockedOn' | 'Overdrive' | 'Standby' | 'Waiting';
+
+export type DrivePhase =
+  | 'idle'
+  | 'approach'
+  | 'follow'
+  | 'seekCargo'
+  | 'secure'
+  | 'tow'
+  | 'deliver';
 
 export interface AbsorbTrail {
   x: number;
@@ -19,6 +30,8 @@ export interface RoverAnalysis {
   roverX: number;
   roverY: number;
   turretAngle: number;
+  drivePhase: DrivePhase;
+  missionChecklist: MissionChecklist;
 }
 
 export interface RoverSnapshot {
@@ -37,4 +50,8 @@ export interface RoverSnapshot {
   boostStreaks: { x: number; y: number; angle: number; age: number }[];
   overdriveRemaining: number;
   analysis: RoverAnalysis;
+  gripperOpen: number;
+  cargoAttached: boolean;
+  drivePhase: DrivePhase;
+  hoverTracking: boolean;
 }

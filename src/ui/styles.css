@@ -80,31 +80,46 @@ body {
   pointer-events: auto;
 }
 
-.clear-btn {
+.toolbar {
   position: absolute;
   top: 16px;
   left: 16px;
   z-index: 15;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: min(520px, calc(100vw - 32px));
+}
+
+.toolbar.is-hidden {
+  display: none;
+}
+
+.clear-btn,
+.tool-btn {
   appearance: none;
   border: 1px solid rgba(0, 224, 255, 0.4);
   background: rgba(8, 12, 16, 0.75);
   color: var(--text);
   font-family: var(--font-display);
-  font-size: 0.7rem;
-  letter-spacing: 0.14em;
+  font-size: 0.65rem;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  padding: 0.55rem 0.9rem;
+  padding: 0.55rem 0.85rem;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.clear-btn:hover {
+.clear-btn:hover,
+.tool-btn:hover {
   border-color: var(--plasma-cyan);
   background: rgba(0, 224, 255, 0.12);
 }
 
-.clear-btn.is-hidden {
-  display: none;
+.tool-btn.is-active {
+  border-color: var(--plasma-amber);
+  background: rgba(255, 154, 40, 0.18);
+  color: #ffe0b0;
 }
 
 /* Boot overlay */

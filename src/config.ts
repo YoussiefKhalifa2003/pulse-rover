@@ -5,29 +5,25 @@ export const CONFIG = {
   CAMERA_HEIGHT: 720,
   CAMERA_FPS: 30,
 
-  // Path / plasma tether — prefer one smooth ribbon
+  // Path / plasma tether
   PATH_LIFETIME_MS: 20_000,
-  /** Active drive stroke never decays until the rover finishes it. */
   PIN_ACTIVE_ROUTE: true,
   WAYPOINT_MIN_DIST_PX: 18,
   MAX_WAYPOINTS: 350,
   STROKE_BREAK_PX: 80,
-  /** Resume same stroke if tip reappears nearby within this window. */
   STROKE_RESUME_MS: 420,
   STROKE_RESUME_PX: 70,
-  /** Drop accidental flick strokes. */
   MIN_STROKE_POINTS: 4,
   ERASE_RADIUS_PX: 44,
   PATH_SMOOTH_ITERS: 3,
-  /** Live EMA toward new tip while painting (0–1). */
   PAINT_POINT_EMA: 0.38,
 
-  // Paint gate — sticky stroke; long end debounce (draw-then-drive)
-  INDEX_EXTEND_ON: 0.068,
-  INDEX_EXTEND_OFF: 0.032,
-  PAINT_START_HOLD_MS: 70,
-  PAINT_END_HOLD_MS: 480,
-  /** GameApp waits this long after paint ends before releasing the rover. */
+  // Pinch-to-paint (hover when open)
+  PINCH_ON: 0.05,
+  PINCH_OFF: 0.078,
+  PINCH_START_HOLD_MS: 100,
+  PINCH_END_HOLD_MS: 180,
+  PINCH_EMA: 0.28,
   DRIVE_COMMIT_MS: 420,
   MIN_HAND_PRESENCE: 0.55,
   HAND_LOST_GRACE_MS: 280,
@@ -40,7 +36,7 @@ export const CONFIG = {
   TIP_BLEND_DIP: 0.35,
   TIP_MAX_JUMP_PX: 70,
 
-  // Rover — constant-speed sequential waypoint drive
+  // Rover drive
   LOCK_RADIUS_PX: 320,
   LOOKAHEAD_NODES: 1,
   WAYPOINT_REACH_PX: 36,
@@ -62,8 +58,18 @@ export const CONFIG = {
   EDGE_MARGIN_PX: 60,
   RECON_HOME_PULL: 0.5,
   STICKY_STROKE: true,
-  /** Disable sudden overdrive while following for consistent feel. */
   OVERDRIVE_ENABLED: false,
+
+  // Delivery mission / cargo
+  CARGO_SIZE: 28,
+  CARGO_PICKUP_RADIUS: 48,
+  SECURE_MS: 450,
+  GRIP_OFFSET: 34,
+  GRIPPER_OPEN: 0.85,
+  DROP_ZONE_W: 120,
+  DROP_ZONE_H: 90,
+  DROP_ZONE_MARGIN: 48,
+  TOW_SPEED_MULT: 0.85,
 
   // States
   RECON_BURST_SPEED: 36,

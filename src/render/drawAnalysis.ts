@@ -1,6 +1,7 @@
 import type { RoverState } from '../rover/types';
 import type { RoverAnalysis } from '../rover/types';
 import type { PlasmaPath } from '../path/PlasmaPath';
+import type { TipState } from '../vision/TipPipeline';
 import { CONFIG } from '../config';
 
 /**
@@ -21,12 +22,10 @@ export function drawAnalysis(
   ctx.save();
   ctx.globalCompositeOperation = 'lighter';
 
-  // Waypoint circles (robot sampling the tether)
   let seq = 0;
   for (let i = 0; i < pts.length; i++) {
     const w = pts[i];
     if (strokeId !== null && w.strokeId !== strokeId) {
-      // Dim other strokes
       ctx.strokeStyle = 'rgba(120,140,160,0.2)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -64,7 +63,6 @@ export function drawAnalysis(
       ctx.stroke();
     }
 
-    // Tiny index every few nodes
     if (seq % 5 === 0 || isFocus) {
       ctx.fillStyle = isFocus
         ? 'rgba(255,220,120,0.95)'
@@ -74,7 +72,6 @@ export function drawAnalysis(
     }
   }
 
-  // Lookahead / pursuit target
   if (analysis.lookahead && !analysis.holding) {
     const t = analysis.lookahead;
     ctx.strokeStyle = `rgba(255,100,140,${0.55 + pulse * 0.35})`;
@@ -89,7 +86,6 @@ export function drawAnalysis(
     ctx.lineTo(t.x, t.y + 8);
     ctx.stroke();
 
-    // Line from rover to pursuit
     ctx.strokeStyle = 'rgba(255,100,140,0.35)';
     ctx.setLineDash([6, 6]);
     ctx.beginPath();
@@ -99,7 +95,6 @@ export function drawAnalysis(
     ctx.setLineDash([]);
   }
 
-  // Absorb / sensor radius around rover
   ctx.strokeStyle = analysis.holding
     ? `rgba(180,200,210,${0.25 + pulse * 0.15})`
     : `rgba(0,255,200,${0.3 + pulse * 0.2})`;
@@ -114,7 +109,6 @@ export function drawAnalysis(
   );
   ctx.stroke();
 
-  // Scan wedge from turret
   const fov = 0.55;
   const range = 90;
   ctx.fillStyle = analysis.holding
@@ -139,29 +133,53 @@ export function drawAnalysisHud(
   ctx: CanvasRenderingContext2D,
   analysis: RoverAnalysis,
   state: RoverState,
-  opts: { width: number; height: number; clean: boolean; painting: boolean },
+  opts: {
+    width: number;
+    height: number;
+    clean: boolean;
+    painting: boolean;
+    tipMode: TipState['mode'];
+  },
 ): void {
   if (opts.clean) return;
 
   const lines: string[] = [];
+  const phase = analysis.drivePhase;
+  const cl = analysis.missionChecklist;
+
   if (opts.painting || analysis.holding) {
-    lines.push('MODE  DRAW — rover waiting');
+    lines.push(
+      opts.tipMode === 'hover'
+        ? 'MODE  HOVER — open hand (no ink)'
+        : 'MODE  PAINT — pinch to ink · release commits',
+    );
     lines.push('Finish the stroke, then rover approaches start');
-  } else if (analysis.nodeTotal > 0 && analysis.nodeIndex === 0) {
+  } else if (phase === 'approach') {
     lines.push('MODE  APPROACH — driving to path start');
     lines.push(`NODES  ${analysis.nodeTotal} locked · start highlighted`);
-    lines.push('Path pinned — will not decay until complete');
-  } else if (analysis.nodeTotal > 0) {
+  } else if (phase === 'seekCargo') {
+    lines.push('MODE  SEEK — fetching plasma core');
+  } else if (phase === 'secure') {
+    lines.push('MODE  SECURE — locking cargo');
+  } else if (phase === 'tow') {
+    lines.push('MODE  TOW — delivering to drop zone');
+  } else if (phase === 'deliver') {
+    lines.push('MODE  DELIVER — releasing cargo');
+  } else if (phase === 'follow' || analysis.nodeTotal > 0) {
     lines.push(`MODE  DRIVE — ${state.toUpperCase()}`);
     lines.push(
-      `NODE  ${Math.max(1, analysis.nodeIndex)} / ${analysis.nodeTotal}   stroke #${analysis.activeStrokeId ?? '—'}`,
-    );
-    lines.push(
-      `TRACK  node reach ${CONFIG.WAYPOINT_REACH_PX}px   absorb ${CONFIG.ABSORB_RADIUS_PX}px`,
+      `NODE  ${Math.max(1, analysis.nodeIndex)} / ${analysis.nodeTotal}`,
     );
   } else {
-    lines.push('MODE  IDLE — draw a path to begin');
+    lines.push('MODE  IDLE — pinch a path · deploy core for delivery');
   }
+
+  // Mission checklist
+  lines.push(
+    `${cl.approachStart ? '[x]' : '[ ]'} Approach start`,
+  );
+  lines.push(`${cl.secured ? '[x]' : '[ ]'} Secure core`);
+  lines.push(`${cl.delivered ? '[x]' : '[ ]'} Deliver to zone`);
 
   ctx.save();
   ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
@@ -172,10 +190,15 @@ export function drawAnalysisHud(
   ctx.fillStyle = 'rgba(8,12,16,0.72)';
   roundRect(ctx, x, y, boxW, boxH, 4);
   ctx.fill();
-  ctx.fillStyle = 'rgba(0,230,255,0.9)';
   lines.forEach((line, i) => {
-    ctx.fillStyle =
-      i === 0 ? 'rgba(0,230,255,0.95)' : 'rgba(200,220,230,0.85)';
+    const isCheck = line.startsWith('[');
+    ctx.fillStyle = isCheck
+      ? line.startsWith('[x]')
+        ? 'rgba(80,230,140,0.95)'
+        : 'rgba(160,180,190,0.75)'
+      : i === 0
+        ? 'rgba(0,230,255,0.95)'
+        : 'rgba(200,220,230,0.85)';
     ctx.font =
       i === 0
         ? '600 11px "Segoe UI", system-ui, sans-serif'

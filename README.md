@@ -1,6 +1,6 @@
 # Pulse-Rover
 
-**AR desk proving ground** — paint a glowing plasma tether with your index finger on a live webcam feed, and watch a sci-fi micro-rover lock on, absorb the path, charge up, and overdrive across your desk.
+**AR desk proving ground** — hover with an open hand, **pinch to paint** a plasma tether, deploy a Plasma Core, and watch a sci-fi micro-rover approach, secure, tow, and deliver.
 
 No robotics hardware. Browser only.
 
@@ -16,37 +16,40 @@ npm run dev
 ## How to play
 
 1. Click **Engage** and allow the webcam.
-2. **Pinch thumb + index** and drag to paint. Release to end a stroke (new strokes stay separate).
-3. **C** or **Clear path** wipes all ink. **Right-drag** or hold **E** erases locally.
-4. Mouse drag also paints if you prefer.
+2. **Open hand** = hover (reticle + turret track; no ink).
+3. **Pinch thumb + index** and drag to paint. Release to commit the route.
+4. **Deploy Core** places cargo (or **Place Core** then click). A green **Drop Zone** appears by default (**Reset Zone** restores it).
+5. After commit: rover approaches path start → follows → secures the core (auto-seeks if the path missed) → tows into the zone → delivers.
+6. **C** / **Clear path** wipes ink and aborts the drive (cargo/zone stay). **Esc** exits Place Core. Right-drag / **E** erases locally.
+7. Mouse left-drag still paints intentionally.
 
-The rover follows strokes, absorbs plasma into its charge meter, then **Overdrive**s. Without a path it does short Recon bursts and stays on-screen (letterboxed playfield + edge bounce).
+Filming: open `?clean=1` to hide toolbar / HUD chrome (cargo, zone, rover stay visible).
 
 ## How it works
 
 | Layer | Role |
 |-------|------|
-| Vision | MediaPipe Hand Landmarker in a Web Worker tracks landmark 8 (index tip) |
-| Logic | Decaying waypoints (10s), density-based speed, four-state rover AI |
-| Render | Mirrored webcam + Canvas 2D plasma, underglow, laser lock, procedural rover |
+| Vision | MediaPipe Hand Landmarker; pinch gate (landmarks 4–8) with EMA + hysteresis |
+| Path | Decaying waypoints, pin-while-driving, frozen route copy |
+| Mission | Delivery planner: approach → follow → seek/secure → tow → deliver |
+| Render | Mirrored webcam + plasma, cargo, drop zone, gripper, analysis HUD |
 
-### Rover states
+### Rover drive phases
 
-- **Recon** — short bursts, turret sweep, explores the desk
-- **Locked-On** — steers along the tether, absorbs plasma, fills the charge meter
-- **Overdrive** — 3s boost when charge hits 100% (bridges gaps)
-- **Standby** — after ~30s idle: lowers suspension, headlights off, low-power pulse
+- **approach** — drive to path start (no teleport)
+- **follow** — sequential waypoints at cruise speed
+- **seekCargo** — fetch core if the path never passed near it
+- **secure** — brief clamp + parent cargo to bumper
+- **tow** / **deliver** — haul into drop zone and release
 
-### Plasma tether
-
-Drawn paths glow cyan → violet → ember red over **10 seconds**, then evaporate. Dense squiggles slow the rover; long sweeping arcs let it cruise.
+Idle states: **Waiting** (while drawing), **Recon**, **Standby**.
 
 ## Stack
 
 - Vite + TypeScript (vanilla)
 - `@mediapipe/tasks-vision` `0.10.21` (self-hosted WASM + `.task` in `public/mediapipe/`)
 - Canvas 2D overlay
-- Web Audio cues (optional; safe when muted)
+- Web Audio cues
 
 ## Scripts
 
@@ -72,35 +75,31 @@ Drawn paths glow cyan → violet → ember red over **10 seconds**, then evapora
 src/
   app/GameApp.ts          # orchestration + game loop
   camera/CameraService.ts
-  vision/                 # worker, tip pipeline, paint gate
-  path/PlasmaPath.ts      # waypoints + decay
-  rover/                  # physics + state machine
-  render/                 # plasma, rover, laser, underglow, HUD
+  vision/                 # tip pipeline, pinch paint gate
+  path/PlasmaPath.ts      # waypoints + pin/decay
+  world/                  # Cargo, DropZone, Mission planner
+  rover/                  # route drive + delivery phases
+  render/                 # plasma, cargo, zone, rover, HUD
   audio/AudioCues.ts
   ui/                     # boot overlay + styles
-  config.ts               # all tunables
+  config.ts               # all tunables (pinch, cargo, speeds)
 ```
 
-Tune feel in [`src/config.ts`](src/config.ts) (lifetime, lock radius, speeds, standby timeout, underglow color).
+Tune feel in [`src/config.ts`](src/config.ts).
 
 ## LinkedIn capture checklist (20–40s)
 
 1. Good overhead or 45° desk lighting; clear background.
 2. Open `?clean=1` for a chrome-free frame.
-3. Cold start → Engage → paint a sweeping arc → rover locks on.
-4. Keep painting until the rear meter fills → Overdrive fires.
-5. Pause drawing briefly so Recon/Standby is visible (optional).
-6. Export muted-friendly video; caption with 3 bullets (problem / approach / stack) + GitHub link.
+3. Engage → open hand (hover, no ink) → Deploy Core → pinch a path through/near the core toward the drop zone → release.
+4. Watch approach → secure clamp → tow → deliver chime.
+5. Export muted-friendly video; caption with 3 bullets + GitHub link.
 
 ### Suggested post bullets
 
-- Built a webcam AR sandbox where a finger-painted plasma path guides an autonomous micro-rover — no robots required.
-- MediaPipe hand tracking in a Web Worker + decaying path AI + Canvas 2D underglow/laser FX.
+- Built a webcam AR desk agent: pinch-to-paint plasma routes + a micro-rover that fetches and delivers a plasma core.
+- MediaPipe pinch gate (EMA + hysteresis) + deterministic route copy + parent-bound cargo (no physics engine).
 - Stack: Vite, TypeScript, `@mediapipe/tasks-vision`.
-
-## Architecture note
-
-Inference never blocks the UI thread: the main loop submits `ImageBitmap` frames to a worker with **back-pressure** (drop if busy). Domain modules (`path/`, `rover/`) are DOM-free so behavior can be tuned independently of rendering.
 
 ## License
 

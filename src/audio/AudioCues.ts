@@ -38,6 +38,21 @@ export class AudioCues {
     this.beep(220, 0.12, 0.03);
   }
 
+  paintStart(): void {
+    this.beep(720, 0.035, 0.035);
+  }
+
+  secure(): void {
+    this.beep(480, 0.07, 0.05);
+    this.beep(360, 0.09, 0.04, 0.06);
+  }
+
+  deliver(): void {
+    this.beep(660, 0.07, 0.04);
+    this.beep(990, 0.1, 0.045, 0.08);
+    this.beep(1320, 0.12, 0.03, 0.18);
+  }
+
   private beep(
     freq: number,
     duration: number,

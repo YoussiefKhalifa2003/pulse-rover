@@ -6,7 +6,7 @@ export function drawUnderglow(
   rover: RoverSnapshot,
   now: number,
 ): void {
-  const boost = rover.state === 'Overdrive';
+  const boost = rover.state === 'Overdrive' || rover.cargoAttached;
   const locked = rover.state === 'LockedOn';
   const c = boost
     ? CONFIG.UNDERGLOW_BOOST_COLOR
