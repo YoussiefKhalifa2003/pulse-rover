@@ -49,7 +49,7 @@ export class Rover {
   /** approach = drive to route[0]; follow = sequential nodes */
   private drivePhase: 'idle' | 'approach' | 'follow' = 'idle';
   private desiredAngle = 0;
-  private desiredSpeed = 0;
+  private desiredSpeed: number = 0;
   private holding = false;
 
   private reconMode: 'burst' | 'pause' = 'pause';
@@ -316,16 +316,27 @@ export class Rover {
     this.suspension = lerp(this.suspension, 1, dt * 4);
     this.lastActivityAt = now;
 
-    // ——— PHASE 1: drive to the start of the drawn line ———
+    // ——— PHASE 1: drive to the start (no orbiting) ———
     if (this.drivePhase === 'approach') {
       this.state = 'LockedOn';
       const start = this.route[0];
       this.lockTarget = start;
-      this.desiredAngle = Math.atan2(start.y - this.y, start.x - this.x);
-      this.desiredSpeed = CONFIG.ROVER_APPROACH_SPEED;
 
-      // Do NOT absorb during approach — keep the full line intact
-      if (dist(this.x, this.y, start.x, start.y) <= CONFIG.WAYPOINT_REACH_PX) {
+      const dx = start.x - this.x;
+      const dy = start.y - this.y;
+      const d = Math.hypot(dx, dy);
+      this.desiredAngle = Math.atan2(dy, dx);
+      const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
+
+      // Slow hard when misaligned or close — kills start-point circles
+      let spd: number = CONFIG.ROVER_APPROACH_SPEED;
+      if (turn > 0.7) spd *= clamp(1.1 - turn * 0.55, 0.15, 1);
+      if (d < CONFIG.WAYPOINT_PASS_PX * 2) {
+        spd = Math.min(spd, 35 + d * 0.6);
+      }
+      this.desiredSpeed = spd;
+
+      if (d <= CONFIG.WAYPOINT_REACH_PX || this.hasPassedPoint(start, this.route[1])) {
         this.beginFollowFromStart();
       }
 
@@ -336,57 +347,58 @@ export class Rover {
     // ——— PHASE 2: sequential follow ———
     this.state = 'LockedOn';
 
-    // Finished route
+    this.advanceAlongRoute();
+
+    // Arrived at end
     if (this.followIndex >= this.route.length - 1) {
       const last = this.route[this.route.length - 1];
-      if (last && dist(this.x, this.y, last.x, last.y) < CONFIG.WAYPOINT_REACH_PX) {
+      const dEnd = dist(this.x, this.y, last.x, last.y);
+      this.lockTarget = last;
+      this.desiredAngle = Math.atan2(last.y - this.y, last.x - this.x);
+      if (dEnd < CONFIG.WAYPOINT_REACH_PX || this.hasPassedPoint(last, null)) {
         this.desiredSpeed = 0;
-        this.speed = Math.max(0, this.speed - CONFIG.ROVER_ACCEL * dt);
-        this.lockTarget = last;
+        this.speed = Math.max(0, this.speed - CONFIG.ROVER_ACCEL * dt * 1.5);
         path.absorbNearOnStroke(
           this.x,
           this.y,
           CONFIG.ABSORB_RADIUS_PX,
           this.activeStrokeId,
         );
-        if (this.speed < 5) {
+        if (this.speed < 8 || dEnd < CONFIG.WAYPOINT_REACH_PX * 0.5) {
           this.clearRoute(path);
           this.state = 'Recon';
         }
         this.applyMotion(dt);
         return;
       }
+      this.desiredSpeed = Math.min(CONFIG.ROVER_CRUISE_SPEED * 0.45, 50);
+      this.applyMotion(dt);
+      return;
     }
 
-    // Advance ONLY when we reach the current node (no skipping)
-    while (
-      this.followIndex < this.route.length - 1 &&
-      dist(
-        this.x,
-        this.y,
-        this.route[this.followIndex].x,
-        this.route[this.followIndex].y,
-      ) <= CONFIG.WAYPOINT_REACH_PX
-    ) {
-      this.followIndex++;
-    }
-
-    const look = Math.min(
+    // Target the next node (or one ahead) — always ahead of us on the route
+    const targetIdx = Math.min(
       this.followIndex + CONFIG.LOOKAHEAD_NODES,
       this.route.length - 1,
     );
-    const target = this.route[look];
+    const target = this.route[targetIdx];
+    const next = this.route[this.followIndex];
     this.lockTarget = target;
 
-    this.desiredAngle = Math.atan2(target.y - this.y, target.x - this.x);
-    this.desiredSpeed = CONFIG.ROVER_CRUISE_SPEED;
-
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    this.desiredAngle = Math.atan2(dy, dx);
     const turn = Math.abs(angleDiff(this.angle, this.desiredAngle));
-    if (turn > 1.0) {
-      this.desiredSpeed *= clamp(1.15 - turn * 0.35, 0.55, 1);
-    }
+    const dNext = dist(this.x, this.y, next.x, next.y);
 
-    // Absorb only nodes we've already passed (behind / at rover)
+    // Steady cruise; brake for sharp turns / tight nodes instead of spinning
+    let spd: number = CONFIG.ROVER_CRUISE_SPEED;
+    if (turn > 0.55) spd *= clamp(1.05 - turn * 0.5, 0.25, 1);
+    if (dNext < CONFIG.WAYPOINT_PASS_PX) {
+      spd = Math.min(spd, 45 + dNext * 0.8);
+    }
+    this.desiredSpeed = spd;
+
     const absorbed = path.absorbNearOnStroke(
       this.x,
       this.y,
@@ -407,26 +419,58 @@ export class Rover {
       });
     }
 
-    if (
-      CONFIG.OVERDRIVE_ENABLED &&
-      this.charge >= CONFIG.OVERDRIVE_CHARGE_THRESHOLD &&
-      now >= this.overdriveUntil
-    ) {
-      this.overdriveUntil = now + CONFIG.OVERDRIVE_MS;
-      this.charge = 0;
+    this.applyMotion(dt);
+  }
+
+  /**
+   * Advance past waypoints we've reached OR already driven past
+   * (prevents orbiting a node we overshot).
+   */
+  private advanceAlongRoute(): void {
+    while (this.followIndex < this.route.length - 1) {
+      const cur = this.route[this.followIndex];
+      const nxt =
+        this.followIndex + 1 < this.route.length
+          ? this.route[this.followIndex + 1]
+          : null;
+      const near = dist(this.x, this.y, cur.x, cur.y) <= CONFIG.WAYPOINT_REACH_PX;
+      if (near || this.hasPassedPoint(cur, nxt)) {
+        this.followIndex++;
+        continue;
+      }
+      break;
     }
-    if (CONFIG.OVERDRIVE_ENABLED && now < this.overdriveUntil) {
-      this.state = 'Overdrive';
-      this.desiredSpeed = CONFIG.ROVER_CRUISE_SPEED * CONFIG.OVERDRIVE_SPEED_MULT;
-      this.boostStreaks.push({
-        x: this.x,
-        y: this.y,
-        angle: this.angle,
-        bornAt: now,
-      });
+  }
+
+  /**
+   * True if the rover has crossed past `point` along the path
+   * (or heading has put the point behind us while nearby).
+   */
+  private hasPassedPoint(
+    point: RoutePoint,
+    next: RoutePoint | null | undefined,
+  ): boolean {
+    const toPointX = point.x - this.x;
+    const toPointY = point.y - this.y;
+    const d = Math.hypot(toPointX, toPointY);
+    if (d > CONFIG.WAYPOINT_PASS_PX) return false;
+
+    if (next) {
+      // Past the waypoint along the segment direction
+      const segX = next.x - point.x;
+      const segY = next.y - point.y;
+      const segLen = Math.hypot(segX, segY) || 1;
+      const fromPointX = this.x - point.x;
+      const fromPointY = this.y - point.y;
+      const along = (fromPointX * segX + fromPointY * segY) / segLen;
+      return along > 4;
     }
 
-    this.applyMotion(dt);
+    // Final point / no next: treat as passed when behind our heading
+    const fwdX = Math.cos(this.angle);
+    const fwdY = Math.sin(this.angle);
+    const ahead = toPointX * fwdX + toPointY * fwdY;
+    return ahead < 0;
   }
 
   private updateIdle(dt: number, now: number, path: PlasmaPath): void {
