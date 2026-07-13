@@ -1,0 +1,21 @@
+{
+  "name": "pulse-rover",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AR desk sandbox — paint a plasma tether with your finger; guide a sci-fi micro-rover on your webcam feed.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "deploy": "npm run build && gh-pages -d dist"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^0.10.21"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1"
+  }
+}
