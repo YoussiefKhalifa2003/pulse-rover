@@ -9,9 +9,13 @@ import {
   type MissionPlan,
 } from '../world/Mission';
 import { RoverStateMachine } from './RoverStateMachine';
+import { MagDockController } from './MagDockController';
+import type { MagDockInput } from './MagDockController';
 import type {
   AbsorbTrail,
   DrivePhase,
+  MagDockPhase,
+  PersonalityMode,
   RoverSnapshot,
   RoverState,
 } from './types';
@@ -69,6 +73,22 @@ export class Rover {
   private hoverTarget: { x: number; y: number } | null = null;
   private justSecured = false;
   private justDelivered = false;
+  private missionStartedAt = 0;
+  private bob = 0;
+  private recoil = 0;
+  private antenna = 0;
+  private victoryT = 0;
+  private victoryUntil = 0;
+  private flash = 0;
+  private personalityMode: PersonalityMode = 'idle';
+  private glowTint: { r: number; g: number; b: number } | null = null;
+  private wheelTwitch = 0;
+  private magdock = new MagDockController();
+  private magdockInput: MagDockInput | null = null;
+  private quietDeliverUntil = 0;
+  private justMaglock = false;
+  private justPadAcquired = false;
+  private justDisembark = false;
 
   private reconMode: 'burst' | 'pause' = 'pause';
   private reconUntil = 0;
@@ -102,11 +122,56 @@ export class Rover {
     this.gripperOpen = 0;
     this.cargoAttached = false;
     this.hoverTarget = null;
+    this.missionStartedAt = 0;
+    this.bob = 0;
+    this.recoil = 0;
+    this.antenna = 0;
+    this.victoryT = 0;
+    this.victoryUntil = 0;
+    this.flash = 0;
+    this.personalityMode = 'idle';
+    this.glowTint = null;
+    this.magdock.reset();
+    this.magdockInput = null;
+    this.quietDeliverUntil = 0;
     this.lastActivityAt = now;
     this.lastPaintAt = now;
     this.initialized = true;
     this.fsm.reset();
     this.state = 'Recon';
+  }
+
+  setGlowTint(tint: { r: number; g: number; b: number } | null): void {
+    this.glowTint = tint;
+  }
+
+  /** Per-frame MagDock pad input from GameApp. */
+  setMagDockInput(input: MagDockInput | null): void {
+    this.magdockInput = input;
+  }
+
+  get magdockPhase(): MagDockPhase {
+    return this.magdock.phase;
+  }
+
+  getFrozenRoute(): { x: number; y: number }[] {
+    return this.route.map((p) => ({ x: p.x, y: p.y }));
+  }
+
+  getMissionStartedAt(): number {
+    return this.missionStartedAt;
+  }
+
+  /** Short celebration before Theater takes over. */
+  beginVictory(now: number): void {
+    this.victoryUntil = now + CONFIG.THEATER_VICTORY_MS;
+    this.personalityMode = 'victory';
+    this.flash = 1;
+    this.headlights = true;
+  }
+
+  get isCelebrating(): boolean {
+    return this.victoryUntil > 0 && performance.now() < this.victoryUntil;
   }
 
   resize(width: number, height: number): void {
@@ -148,6 +213,7 @@ export class Rover {
     this.desiredSpeed = 0;
     this.speed = 0;
     this.state = 'Recon';
+    this.magdock.reset();
     if (this.cargo && this.cargo.status === 'secured') {
       this.cargo.setStatus('idle');
     } else if (this.cargo && this.cargo.status === 'targeted') {
@@ -184,10 +250,28 @@ export class Rover {
   }
 
   /** Consume one-shot audio events. */
-  consumeEvents(): { secured: boolean; delivered: boolean } {
-    const out = { secured: this.justSecured, delivered: this.justDelivered };
+  consumeEvents(): {
+    secured: boolean;
+    delivered: boolean;
+    servoTick: boolean;
+    maglock: boolean;
+    padAcquired: boolean;
+    disembark: boolean;
+  } {
+    const md = this.magdock.consumeEvents();
+    const out = {
+      secured: this.justSecured,
+      delivered: this.justDelivered,
+      servoTick: false,
+      maglock: this.justMaglock || md.maglock,
+      padAcquired: this.justPadAcquired || md.padAcquired,
+      disembark: this.justDisembark || md.disembark,
+    };
     this.justSecured = false;
     this.justDelivered = false;
+    this.justMaglock = false;
+    this.justPadAcquired = false;
+    this.justDisembark = false;
     return out;
   }
 
@@ -218,6 +302,9 @@ export class Rover {
     this.zone = zone;
     this.cargoAttached = false;
     this.gripperOpen = 0;
+    this.victoryUntil = 0;
+    this.victoryT = 0;
+    this.missionStartedAt = performance.now();
     this.mission =
       cargo && zone
         ? buildDeliveryMission(path, cargo, zone)
@@ -230,6 +317,7 @@ export class Rover {
 
     if (this.route.length === 0) {
       this.drivePhase = 'idle';
+      this.missionStartedAt = 0;
       return;
     }
 
@@ -303,7 +391,18 @@ export class Rover {
       gripperOpen: this.gripperOpen,
       cargoAttached: this.cargoAttached,
       drivePhase: this.drivePhase,
-      hoverTracking: !!this.hoverTarget && (this.holding || this.drivePhase === 'idle'),
+      hoverTracking:
+        !!this.hoverTarget && (this.holding || this.drivePhase === 'idle'),
+      bob: this.bob,
+      recoil: this.recoil,
+      antenna: this.antenna,
+      victoryT: this.victoryT,
+      personalityMode: this.personalityMode,
+      flash: this.flash,
+      glowTint: this.glowTint,
+      magdockPhase: this.magdock.phase,
+      magdockConfidence: this.magdock.confidence,
+      quietDeliverUntil: this.quietDeliverUntil,
       analysis: {
         holding: this.holding,
         followIndex: this.followIndex,
@@ -317,6 +416,17 @@ export class Rover {
         turretAngle: this.turretAngle,
         drivePhase: this.drivePhase,
         missionChecklist: { ...this.mission.checklist },
+        missionStartedAt: this.missionStartedAt,
+        missionElapsedMs:
+          this.missionStartedAt > 0 && this.drivePhase !== 'idle'
+            ? performance.now() - this.missionStartedAt
+            : 0,
+        magdock: {
+          phase: this.magdock.phase,
+          confidence: this.magdock.confidence,
+          statusLine: this.magdock.statusLine,
+          padActive: !!this.magdockInput?.padActive,
+        },
       },
     };
   }
@@ -370,17 +480,171 @@ export class Rover {
       this.cargo.attachTo(this.x, this.y, this.angle);
     }
 
-    if (this.holding) {
-      this.updateWaiting(dt, path);
+    // Victory celebration overrides drive briefly after deliver
+    if (this.victoryUntil > 0 && now < this.victoryUntil) {
+      this.updateVictory(dt, now);
+      this.updatePersonality(dt, now);
       return;
+    }
+
+    if (this.holding) {
+      this.magdock.reset();
+      this.updateWaiting(dt, path);
+      this.updatePersonality(dt, now);
+      return;
+    }
+
+    // MagDock protocol — may pause mission motion
+    if (this.magdockInput) {
+      const proxy = {
+        x: this.x,
+        y: this.y,
+        angle: this.angle,
+        speed: this.speed,
+        desiredSpeed: this.desiredSpeed,
+        desiredAngle: this.desiredAngle,
+        turretAngle: this.turretAngle,
+        suspension: this.suspension,
+        wheelSpin: this.wheelSpin,
+        drivePhase: this.drivePhase,
+      };
+      const owned = this.magdock.update(dt, now, proxy, this.magdockInput);
+      this.x = proxy.x;
+      this.y = proxy.y;
+      this.angle = proxy.angle;
+      this.speed = proxy.speed;
+      this.desiredSpeed = proxy.desiredSpeed;
+      this.desiredAngle = proxy.desiredAngle;
+      this.turretAngle = proxy.turretAngle;
+      this.suspension = proxy.suspension;
+      this.wheelSpin = proxy.wheelSpin;
+
+      if (owned) {
+        this.personalityMode = 'magdock';
+        this.state = 'LockedOn';
+        this.headlights = true;
+        if (this.cargoAttached && this.cargo) {
+          this.cargo.attachTo(this.x, this.y, this.angle);
+        }
+        const boardedLike =
+          this.magdock.isBoarded || this.magdock.phase === 'disembarking';
+        if (!boardedLike) {
+          this.lockTarget = this.magdockInput.geom
+            ? { ...this.magdockInput.geom.center }
+            : null;
+          this.applyMotion(dt);
+        } else {
+          this.lockTarget = null;
+          this.clampToBounds(false);
+        }
+        // Resume mission after disembark completes
+        if (this.magdock.phase === 'free') {
+          const resume = this.magdock.getPausedDrive();
+          if (
+            resume === 'follow' ||
+            resume === 'seekCargo' ||
+            resume === 'tow' ||
+            resume === 'approach'
+          ) {
+            this.drivePhase = resume;
+            this.state = 'LockedOn';
+            this.justDisembark = true;
+          }
+          if (resume) this.magdock.clearPausedDrive();
+        }
+        this.updatePersonality(dt, now);
+        return;
+      }
     }
 
     if (this.drivePhase !== 'idle') {
       this.updateMissionDrive(dt, now, path);
+      this.updatePersonality(dt, now);
       return;
     }
 
     this.updateIdle(dt, now, path);
+    this.updatePersonality(dt, now);
+  }
+
+  private updateVictory(dt: number, now: number): void {
+    this.personalityMode = 'victory';
+    this.desiredSpeed = 0;
+    this.speed = Math.max(0, this.speed - CONFIG.ROVER_ACCEL * dt);
+    const u = 1 - (this.victoryUntil - now) / CONFIG.THEATER_VICTORY_MS;
+    this.victoryT = u;
+    this.angle += dt * 3.2 * Math.sin(u * Math.PI);
+    this.flash = Math.max(0, 1 - u * 1.2);
+    this.headlights = u < 0.85;
+    if (this.zone) {
+      const c = this.zone.center;
+      this.turretAngle = lerpAngle(
+        this.turretAngle,
+        Math.atan2(c.y - this.y, c.x - this.x),
+        1 - Math.exp(-4 * dt),
+      );
+    }
+    if (this.hoverTarget) {
+      const want = Math.atan2(
+        this.hoverTarget.y - this.y,
+        this.hoverTarget.x - this.x,
+      );
+      this.turretAngle = lerpAngle(
+        this.turretAngle,
+        want,
+        1 - Math.exp(-3 * dt),
+      );
+    }
+    this.clampToBounds(false);
+  }
+
+  private updatePersonality(dt: number, now: number): void {
+    this.recoil = Math.max(0, this.recoil - dt * 10);
+    this.flash = Math.max(0, this.flash - dt * 2.5);
+    this.antenna = Math.sin(now * 0.008) * CONFIG.PERSONALITY_ANTENNA;
+
+    if (this.holding) {
+      this.personalityMode = 'waiting';
+      this.bob = Math.sin(now * 0.012) * CONFIG.PERSONALITY_BOB * 0.4;
+      this.wheelTwitch += dt;
+      if (this.wheelTwitch > 0.55) {
+        this.wheelSpin += 0.35;
+        this.wheelTwitch = 0;
+      }
+      return;
+    }
+
+    if (this.magdock.isActive) {
+      this.personalityMode = 'magdock';
+      this.bob = Math.sin(now * 0.02) * 0.5;
+      this.antenna = Math.sin(now * 0.01) * CONFIG.PERSONALITY_ANTENNA;
+      return;
+    }
+
+    if (this.drivePhase === 'secure') {
+      this.personalityMode = 'secure';
+      this.bob = 0;
+      return;
+    }
+
+    if (this.drivePhase !== 'idle') {
+      this.personalityMode = 'driving';
+      this.bob = Math.sin(now * 0.04) * 0.4;
+      return;
+    }
+
+    if (this.hoverTarget) {
+      this.personalityMode = 'hover';
+      this.bob = Math.sin(now * 0.01) * CONFIG.PERSONALITY_BOB * 0.35;
+    } else {
+      this.personalityMode = 'idle';
+      this.bob = Math.sin(now * 0.006) * CONFIG.PERSONALITY_BOB;
+      this.suspension = lerp(
+        this.suspension,
+        1 + Math.sin(now * 0.005) * 0.02,
+        dt * 2,
+      );
+    }
   }
 
   private updateWaiting(dt: number, path: PlasmaPath): void {
@@ -555,8 +819,9 @@ export class Rover {
       this.cargoAttached = true;
       this.gripperOpen = CONFIG.GRIPPER_OPEN * 0.55;
       this.justSecured = true;
+      this.recoil = CONFIG.PERSONALITY_RECOIL;
+      this.flash = 1;
       if (this.cargo) this.cargo.setStatus('secured');
-      // Resume route if remaining, else tow to zone
       if (this.followIndex < this.route.length - 1) {
         this.drivePhase = 'tow';
       } else if (this.mission.hasCargo) {
@@ -650,8 +915,8 @@ export class Rover {
       this.cargoAttached = false;
       this.mission.checklist.delivered = true;
       this.justDelivered = true;
+      this.flash = 1;
       if (this.cargo) {
-        // Leave cargo in zone center-ish
         if (this.zone) {
           const c = this.zone.center;
           this.cargo.x = c.x;
@@ -659,7 +924,12 @@ export class Rover {
         }
         this.cargo.setStatus('delivered');
       }
-      this.finishMission(path);
+      this.clearRoute(path);
+      this.drivePhase = 'idle';
+      this.state = 'Recon';
+      this.gripperOpen = 0;
+      this.quietDeliverUntil = now + CONFIG.QUIET_DELIVER_MS;
+      this.beginVictory(now);
       return;
     }
     this.clampToBounds(false);
@@ -671,6 +941,7 @@ export class Rover {
     this.state = 'Recon';
     this.cargoAttached = false;
     this.gripperOpen = 0;
+    this.missionStartedAt = 0;
   }
 
   private driveTowardRouteNode(

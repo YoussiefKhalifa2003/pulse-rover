@@ -29,8 +29,12 @@ export interface Landmark {
   z: number;
 }
 
+export type Handedness = 'Left' | 'Right' | 'Unknown';
+
 export interface HandSample {
   landmarks: Landmark[];
   presence: number;
   timestamp: number;
+  handedness: Handedness;
+  index: number;
 }

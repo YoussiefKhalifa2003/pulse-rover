@@ -66,10 +66,12 @@ export function drawHud(
     erasing: boolean;
     mode: TipState['mode'];
     drivePhase: DrivePhase;
+    magdockPhase?: import('../rover/types').MagDockPhase;
     clean: boolean;
     fps: number;
     width: number;
     height: number;
+    missionElapsedMs?: number;
   },
 ): void {
   if (opts.clean) return;
@@ -102,6 +104,16 @@ export function drawHud(
     opts.charge > 0.95 ? 'rgba(255,154,40,0.95)' : 'rgba(0,224,255,0.85)';
   ctx.fillRect(x + 2, y + 30, Math.max(0, (chipW - 4) * opts.charge), 4);
 
+  if (opts.missionElapsedMs && opts.missionElapsedMs > 0) {
+    const t = (opts.missionElapsedMs / 1000).toFixed(1) + 's';
+    ctx.fillStyle = 'rgba(10,14,18,0.7)';
+    roundChip(ctx, x, y + 42, chipW, 20, 4);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(0,230,255,0.95)';
+    ctx.font = '600 11px "Segoe UI", system-ui, sans-serif';
+    ctx.fillText(t, x + padX, y + 46);
+  }
+
   // Hints
   ctx.fillStyle = 'rgba(10,14,18,0.62)';
   roundChip(ctx, 14, height - 52, Math.min(440, width - 28), 38, 4);
@@ -115,17 +127,17 @@ export function drawHud(
       : opts.painting
         ? 'PAINT — pinch held · release to commit route'
         : opts.hovering
-          ? 'HOVER — open hand · pinch thumb+index to paint'
+          ? 'HOVER — open flat palm to MagDock · pinch to paint'
           : opts.handVisible
-            ? 'Hand seen · open to hover · pinch to paint'
-            : 'Pinch to paint · Deploy Core · paint near core to deliver',
+            ? 'Open flat palm = landing pad · pinch to paint'
+            : 'MagDock: offer your palm — rover boards and rides with you',
     24,
     height - 44,
   );
   ctx.font = '500 11px "Segoe UI", system-ui, sans-serif';
   ctx.fillStyle = 'rgba(160,180,190,0.85)';
   ctx.fillText(
-    'Mouse drag paints · Place Core click · C clears path · Esc exits place',
+    'R = Instant Replay after deliver · M mute · C clear · Esc exit',
     24,
     height - 26,
   );
@@ -138,9 +150,19 @@ function modeLabel(opts: {
   hovering: boolean;
   erasing: boolean;
   drivePhase: DrivePhase;
+  magdockPhase?: import('../rover/types').MagDockPhase;
   state: RoverState;
 }): string {
   if (opts.erasing) return 'ERASE';
+  if (opts.magdockPhase && opts.magdockPhase !== 'free') {
+    if (opts.magdockPhase === 'airborne') return 'AIRBORNE';
+    if (opts.magdockPhase === 'boarded' || opts.magdockPhase === 'hardDock')
+      return 'MAGDOCK';
+    if (opts.magdockPhase === 'evaluating' || opts.magdockPhase === 'hesitating')
+      return 'EVALUATE';
+    if (opts.magdockPhase === 'disembarking') return 'DISEMBARK';
+    return 'MAGDOCK';
+  }
   if (opts.painting) return 'PAINT';
   if (opts.hovering) return 'HOVER';
   if (opts.drivePhase !== 'idle') {
@@ -154,8 +176,10 @@ function modeColor(opts: {
   painting: boolean;
   hovering: boolean;
   drivePhase: DrivePhase;
+  magdockPhase?: import('../rover/types').MagDockPhase;
   state: RoverState;
 }): string {
+  if (opts.magdockPhase && opts.magdockPhase !== 'free') return '#ffb040';
   if (opts.painting) return '#00ffd8';
   if (opts.hovering) return '#9ab8c8';
   if (opts.drivePhase === 'secure' || opts.drivePhase === 'tow') return '#ff9a28';

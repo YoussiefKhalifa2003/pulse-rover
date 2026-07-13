@@ -11,6 +11,26 @@ export type DrivePhase =
   | 'tow'
   | 'deliver';
 
+export type MagDockPhase =
+  | 'free'
+  | 'evaluating'
+  | 'hesitating'
+  | 'seekingPad'
+  | 'softDock'
+  | 'hardDock'
+  | 'boarded'
+  | 'airborne'
+  | 'disembarking';
+
+export type PersonalityMode =
+  | 'idle'
+  | 'hover'
+  | 'waiting'
+  | 'driving'
+  | 'secure'
+  | 'victory'
+  | 'magdock';
+
 export interface AbsorbTrail {
   x: number;
   y: number;
@@ -18,7 +38,13 @@ export interface AbsorbTrail {
   angle: number;
 }
 
-/** Live debug / robot-perspective readout for the analysis overlay. */
+export interface MagDockHud {
+  phase: MagDockPhase;
+  confidence: number;
+  statusLine: string;
+  padActive: boolean;
+}
+
 export interface RoverAnalysis {
   holding: boolean;
   followIndex: number;
@@ -32,6 +58,9 @@ export interface RoverAnalysis {
   turretAngle: number;
   drivePhase: DrivePhase;
   missionChecklist: MissionChecklist;
+  missionStartedAt: number;
+  missionElapsedMs: number;
+  magdock: MagDockHud;
 }
 
 export interface RoverSnapshot {
@@ -54,4 +83,14 @@ export interface RoverSnapshot {
   cargoAttached: boolean;
   drivePhase: DrivePhase;
   hoverTracking: boolean;
+  bob: number;
+  recoil: number;
+  antenna: number;
+  victoryT: number;
+  personalityMode: PersonalityMode;
+  flash: number;
+  glowTint: { r: number; g: number; b: number } | null;
+  magdockPhase: MagDockPhase;
+  magdockConfidence: number;
+  quietDeliverUntil: number;
 }

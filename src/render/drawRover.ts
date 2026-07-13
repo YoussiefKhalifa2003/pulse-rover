@@ -43,14 +43,25 @@ export function drawRover(
 
   const s = CONFIG.ROVER_SCALE * rover.suspension;
   ctx.scale(s, s);
+  ctx.translate(-rover.recoil * 0.5, rover.bob * 0.15);
 
-  // Shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  // Soft contact shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
   ctx.beginPath();
-  ctx.ellipse(0, 10, 28, 10, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 12, 30, 11, 0, 0, Math.PI * 2);
   ctx.fill();
 
-  // Wheels (4 oversized)
+  // Flash / secure pulse
+  if (rover.flash > 0.05) {
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = `rgba(255,220,160,${rover.flash * 0.35})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, 36, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  // Wheels
   const wheelSpin = rover.wheelSpin;
   const wheels = [
     { x: -16, y: -16 },
@@ -60,7 +71,9 @@ export function drawRover(
   ];
   for (const w of wheels) {
     const bob =
-      rover.state === 'Recon' ? Math.sin(now * 0.02 + w.x) * 1.5 : 0;
+      rover.personalityMode === 'idle' || rover.personalityMode === 'waiting'
+        ? Math.sin(now * 0.02 + w.x) * 1.5 + rover.bob * 0.3
+        : rover.bob * 0.2;
     drawWheel(ctx, w.x, w.y + bob, wheelSpin);
   }
 
@@ -71,6 +84,18 @@ export function drawRover(
   bodyGrad.addColorStop(1, '#12151a');
   roundRect(ctx, -22, -12, 44, 24, 5);
   ctx.fillStyle = bodyGrad;
+  ctx.fill();
+
+  // Antenna bob
+  ctx.strokeStyle = 'rgba(180,200,210,0.8)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-6, -12);
+  ctx.lineTo(-6 + rover.antenna * 20, -22);
+  ctx.stroke();
+  ctx.fillStyle = 'rgba(0,220,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(-6 + rover.antenna * 20, -22, 2, 0, Math.PI * 2);
   ctx.fill();
 
   // Brushed aluminum strip

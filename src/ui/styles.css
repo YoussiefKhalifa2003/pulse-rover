@@ -214,3 +214,50 @@ body {
   font-size: 0.75rem;
   color: var(--muted);
 }
+
+.coach-panel {
+  position: absolute;
+  left: 16px;
+  bottom: 72px;
+  z-index: 16;
+  pointer-events: none;
+}
+
+.coach-panel.is-hidden {
+  display: none;
+}
+
+.coach-card {
+  pointer-events: auto;
+  max-width: min(360px, calc(100vw - 32px));
+  padding: 0.75rem 0.9rem;
+  background: rgba(8, 12, 16, 0.88);
+  border: 1px solid rgba(0, 224, 255, 0.35);
+  font-family: var(--font-body);
+}
+
+.coach-step {
+  font-family: var(--font-display);
+  font-size: 0.65rem;
+  letter-spacing: 0.14em;
+  color: var(--plasma-cyan);
+  margin-bottom: 0.35rem;
+}
+
+.coach-text {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--text);
+  margin-bottom: 0.55rem;
+}
+
+.coach-skip {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0;
+}

@@ -8,9 +8,10 @@ export function drawUnderglow(
 ): void {
   const boost = rover.state === 'Overdrive' || rover.cargoAttached;
   const locked = rover.state === 'LockedOn';
-  const c = boost
+  const base = boost
     ? CONFIG.UNDERGLOW_BOOST_COLOR
-    : CONFIG.UNDERGLOW_COLOR;
+    : rover.glowTint ?? CONFIG.UNDERGLOW_COLOR;
+  const c = base;
 
   const pulse =
     rover.state === 'Standby'

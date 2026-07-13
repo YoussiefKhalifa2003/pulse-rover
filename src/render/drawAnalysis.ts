@@ -139,6 +139,7 @@ export function drawAnalysisHud(
     clean: boolean;
     painting: boolean;
     tipMode: TipState['mode'];
+    bestTimeMs?: number;
   },
 ): void {
   if (opts.clean) return;
@@ -174,10 +175,14 @@ export function drawAnalysisHud(
     lines.push('MODE  IDLE — pinch a path · deploy core for delivery');
   }
 
-  // Mission checklist
-  lines.push(
-    `${cl.approachStart ? '[x]' : '[ ]'} Approach start`,
-  );
+  if (analysis.missionElapsedMs > 0) {
+    lines.push(`TIME  ${(analysis.missionElapsedMs / 1000).toFixed(1)} s`);
+  }
+  if (opts.bestTimeMs && Number.isFinite(opts.bestTimeMs)) {
+    lines.push(`BEST  ${(opts.bestTimeMs / 1000).toFixed(1)} s`);
+  }
+
+  lines.push(`${cl.approachStart ? '[x]' : '[ ]'} Approach start`);
   lines.push(`${cl.secured ? '[x]' : '[ ]'} Secure core`);
   lines.push(`${cl.delivered ? '[x]' : '[ ]'} Deliver to zone`);
 

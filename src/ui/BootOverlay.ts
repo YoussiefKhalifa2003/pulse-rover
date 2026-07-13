@@ -13,10 +13,10 @@ export class BootOverlay {
       <div class="boot-panel">
         <div class="boot-brand">PULSE-ROVER</div>
         <p class="boot-tagline">AR desk proving ground</p>
-        <p class="boot-help"><strong>Pinch to paint</strong> · open hand to hover. Deploy a Plasma Core, paint a route, and the rover approaches, secures, tows, and delivers to the drop zone.</p>
+        <p class="boot-help"><strong>MagDock</strong> — open a flat palm and the rover boards your hand, rides with you, then continues its mission. Pinch to paint routes · Deploy Core to deliver.</p>
         <p class="boot-status" data-status></p>
         <button type="button" class="boot-cta" data-cta>Engage</button>
-        <p class="boot-note">Webcam · Chrome / Edge · pinch thumb+index · mouse drag paints · Deploy Core for delivery</p>
+        <p class="boot-note">Webcam · Chrome / Edge · flat palm = landing pad · pinch paints · R = Instant Replay</p>
       </div>
     `;
     parent.appendChild(this.root);

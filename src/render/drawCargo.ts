@@ -63,5 +63,13 @@ export function drawCargo(
     y + r + 16,
   );
 
+  if (status === 'targeted' || status === 'secured') {
+    ctx.strokeStyle = `rgba(255,200,80,${0.35 + pulse * 0.4})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, r + 16 + pulse * 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   ctx.restore();
 }
